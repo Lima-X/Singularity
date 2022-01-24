@@ -9,9 +9,11 @@ module;
 #include <span>
 #include <concepts>
 
-export module ImageHelpBase;
-import VirtualizerBase;
+export module ImageHelp;
+export import VirtualizerBase;
 
+// ImageHelp module exception report model implementation,
+// all tools of this toolset throw this type when they encounter a fatal issue
 export class ImageHelpException {
 public:
 	enum ExceptionCode {
@@ -39,13 +41,13 @@ public:
 		TRACE_FUNCTION_PROTO;
 	}
 
-	const ExceptionCode    StatusCode;
 	const std::string_view ExceptionText;
+	const ExceptionCode    StatusCode;
 };
 
 
-
-// This inline class implements a small iterator to traverse the base relocation table
+// This inline class implements a small iterator to traverse the base relocation table,
+// may need expansion if this will be made available later for editing the image
 class RelocationBlockView {
 public:
 	class RelocationBlockIterator {
@@ -66,11 +68,10 @@ public:
 			TRACE_FUNCTION_PROTO; return CurrentPosition;
 		}
 
-		// bool operator==(RelocationBlockIterator&) = default;
 		bool operator!=(
 			IN RelocationBlockIterator& Other
-			) {
-			TRACE_FUNCTION_PROTO; return !(this->CurrentPosition == Other.CurrentPosition);
+		) const {
+			TRACE_FUNCTION_PROTO; return this->CurrentPosition != Other.CurrentPosition;
 		};
 
 	private:
@@ -82,24 +83,27 @@ public:
 			TRACE_FUNCTION_PROTO;
 		}
 
-		byte_t*                ImageBaseAddress;
+		byte_t* const          ImageBaseAddress;
 		IMAGE_BASE_RELOCATION* CurrentPosition;
 	};
 
 	RelocationBlockView(
-		IN IMAGE_DATA_DIRECTORY& RelocationDirectory)
-		: BaseRelocationDirectory(RelocationDirectory) {
+		IN byte_t*               ImageBase,
+		IN IMAGE_DATA_DIRECTORY& RelocationDirectory
+	)
+		: ImageBaseAddress(ImageBase),
+		  BaseRelocationDirectory(RelocationDirectory) {
 		TRACE_FUNCTION_PROTO;
 	}
 
-	RelocationBlockIterator begin() {
+	RelocationBlockIterator begin() const {
 		TRACE_FUNCTION_PROTO;
 		return RelocationBlockIterator(ImageBaseAddress,
 			reinterpret_cast<IMAGE_BASE_RELOCATION*>(
 				BaseRelocationDirectory.VirtualAddress
 				+ ImageBaseAddress));
 	}
-	RelocationBlockIterator end() {
+	RelocationBlockIterator end() const {
 		TRACE_FUNCTION_PROTO;
 		return RelocationBlockIterator(ImageBaseAddress,
 			reinterpret_cast<IMAGE_BASE_RELOCATION*>(
@@ -109,13 +113,16 @@ public:
 	}
 
 private:
-	byte_t*               ImageBaseAddress;
+	byte_t* const         ImageBaseAddress;
 	IMAGE_DATA_DIRECTORY& BaseRelocationDirectory;
 };
 
+// Implements the minimum required toolset to load, map and rebuild a portable executable.
+// This module statically derives from and extends this base loader,
+// in order to more easily work with coff images and parse or edit them.
 export template<template<class> class... T>
-class ImageHelpBase : 
-	public T<ImageHelpBase<T...>>... {
+class ImageLoader : 
+	public T<ImageLoader<T...>>... {
 
 	enum ImageHelpWorkState {
 		IMAGEHELP_REFUSE = -2000, // A post detection found an issue with the object,
@@ -144,7 +151,7 @@ public:
 		FILESHARE_EXCLUSIVE = 0
 	};
 
-	ImageHelpBase(
+	ImageLoader(
 		IN  std::string_view ImageFileName,
 		OPT FileAccessRights FileAccess = FILE_READWRITE,
 		OPT FileShareRights  FileSharing = FILESHARE_READ
@@ -169,7 +176,7 @@ public:
 			ImageFileName,
 			FileAccess);
 	}
-	~ImageHelpBase() {
+	~ImageLoader() {
 		TRACE_FUNCTION_PROTO;
 
 		// Unmap and discard changes, then close the file and exit
@@ -258,9 +265,13 @@ public:
 						ImageHelpException::STATUS_INVALID_MEMORY_ADDRESS);
 		};
 
+		// Reserve 2gb of virtual memory of to where we map the image,
+		// these are probably never all committed, they are just reserved,
+		// to expand the image to its maximum physical/virtual size,
+		// which is by spec 2gb as rva's are 31 bit to fit within a displacement32
 		auto ReservedMemory2 = MakeSmartPointerWithVirtualAlloc<
 			std::unique_ptr>(DesiredMapping,
-				SizeOfImage,
+				2097152ull * 1024 - 1,
 				MEM_RESERVE,
 				PAGE_NOACCESS);
 		CheckOrThrowMemory(ReservedMemory2.get());
@@ -394,8 +405,10 @@ public:
 		}
 
 		// Get metadata required for relocating (relocation directory and base relocation table)
-		auto& RelocationDirectory = GetCoffMemberByTemplateId<GET_DATA_DIRECTORIES>()[IMAGE_DIRECTORY_ENTRY_BASERELOC];
-		RelocationBlockView RelocationView(RelocationDirectory);
+		auto& RelocationDirectory = GetCoffMemberByTemplateId<
+			GET_DATA_DIRECTORIES>()[IMAGE_DIRECTORY_ENTRY_BASERELOC];
+		RelocationBlockView RelocationView(ImageMapping.get(),
+			RelocationDirectory);
 
 		// Walk base relocation block table (needs excessive debugging)
 		for (auto& RelocationBlock : RelocationView) {
@@ -526,7 +539,6 @@ public:
 	}
 #pragma endregion
 
-// I may consider rewriting this in some other way that could be more efficient/portable idk
 #pragma region File region helpers
 	enum SupportedCoffGetters {
 		GET_DOS_HEADER,
@@ -554,7 +566,7 @@ private:
 public:
 
 	template<SupportedCoffGetters TypeTag>
-	TypeEnum<TypeTag>::type GetCoffMemberByTemplateId() {
+	TypeEnum<TypeTag>::type GetCoffMemberByTemplateId() const {
 		TRACE_FUNCTION_PROTO;
 		using type = TypeEnum<TypeTag>::type;
 
@@ -582,17 +594,66 @@ public:
 				GetCoffMemberByTemplateId<GET_FILE_HEADER>().NumberOfSections);
 		}
 	}
-
-
-
 #pragma endregion
 
+	byte_t* GetImageFileMapping() const {
+		TRACE_FUNCTION_PROTO; return ImageMapping.get();
+	}
 
+// Minimal private sector, just required to store the file handled and a object to reference the mapping
 private:
 	VirtualPointer<std::unique_ptr> 
 	       ImageMapping;
 	HANDLE FileHandle = INVALID_HANDLE_VALUE;
+};
+
+template<typename T>
+class ImageEditor 
+	: private CrtpHelp<T> {
+public:
+#pragma region Exception directory parser and editor components
+	std::span<const RUNTIME_FUNCTION> GetRuntimeFuntionTable() const {
+		TRACE_FUNCTION_PROTO;
+
+		// Locate the runtime function table and test, then return view
+		auto& Underlying = this->GetUnderlyingCrtpBase();
+		IMAGE_DATA_DIRECTORY& ExceptionDirectroy = GetCoffMemberByTemplateId<
+			ImageLoader::GET_DATA_DIRECTORIES>()[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
+		if (!ExceptionDirectroy)
+			return {};
+
+		return std::span(
+			reinterpret_cast<PRUNTIME_FUNCTION>(
+				ExceptionDirectroy.VirtualAddress
+					+ Underlying.GetImageFileMapping(),
+				ExceptionDirectroy.Size / sizeof(RUNTIME_FUNCTION)));
+	}
+	PRUNTIME_FUNCTION GetRuntimeFuntionForAddress(
+		IN rva_t RvaWithinPossibleFunction
+	) {
+		TRACE_FUNCTION_PROTO;
+		auto ViewOfFunctionTable = GetRuntimeFuntionTable();
+		for (auto& FunctionEntry : ViewOfFunctionTable)
+			if (FunctionEntry.BeginAddress <= RvaWithinPossibleFunction &&
+				FunctionEntry.EndAddress >= RvaWithinPossibleFunction)
+				return &FunctionEntry;
+		return nullptr;
+	}
+	PRUNTIME_FUNCTION GetRuntimeFuntionForAddress(
+		IN byte_t* VirtualAddressWithinPossibleFunction
+	) {
+		TRACE_FUNCTION_PROTO;
+		return GetRuntimeFuntionForAddress(
+			reinterpret_cast<rva_t>(
+				VirtualAddressWithinPossibleFunction
+					- this->GetUnderlyingCrtpBase().GetImageFileMapping()));
+	}
+
+#pragma endregion
+
+
 
 };
 
-export using ImageHelp = ImageHelpBase<>;
+
+export using ImageHelp = ImageLoader<ImageEditor>;

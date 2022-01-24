@@ -13,13 +13,13 @@ extern "C" {
 	// Enclosed code may not be guaranteed to be virtualized such as code within switch statements,
 	// due to code optimizations finding code is done through hysterics which aren't 100% complete.
 	__declspec(dllimport)
-		void SingrulatityVirtualCodeBegin(
-			void
-		);
+	void SingularityVirtualCodeBegin(
+		void
+	);
 	__declspec(dllimport)
-		void SingrulatityVirtualCodeEnd(
-			void
-		);
+	void SingularityVirtualCodeEnd(
+		void
+	);
 
 #ifdef __cplusplus
 }

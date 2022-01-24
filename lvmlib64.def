@@ -1,5 +1,5 @@
 LIBRARY lvmlib64
 	VERSION 6.0
 	EXPORTS
-		SingrulatityVirtualCodeBegin
-		SingrulatityVirtualCodeEnd
+		SingularityVirtualCodeBegin
+		SingularityVirtualCodeEnd

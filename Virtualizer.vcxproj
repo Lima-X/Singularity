@@ -96,6 +96,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="ControlFlowGraph.ixx" />
     <ClCompile Include="ImageHelp.ixx" />
     <ClCompile Include="PathAnalyzer.ixx" />
     <ClCompile Include="VirtualizerBase.ixx" />

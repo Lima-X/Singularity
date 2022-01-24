@@ -8,38 +8,21 @@
 #pragma region Singularity annotations
 #ifndef IN
 #define IN
-#else
-static_assert(0, "Singularity annotation short name was already defined somewhere else");
 #endif
 #ifndef OUT
 #define OUT
-#else
-static_assert(0, "Singularity annotation short name was already defined somewhere else");
 #endif
 #ifndef INOUT
 #define INOUT
-#else
-static_assert(0, "Singularity annotation short name was already defined somewhere else");
 #endif
 #ifndef OPT
 #define OPT
-#else
-static_assert(0, "Singularity annotation short name was already defined somewhere else");
 #endif
 #pragma endregion
 
 
-// Configure base includes for shared base and libc
-#define _CRT_SECURE_NO_WARNINGS
-#include <utility>
-#include <memory>
-#include <intrin.h>
-
-
-// Configure and import windows.h
-#pragma region Import windows.
-
-	// Disable specific API sets to reduce header size
+// Disable specific API sets to reduce header size
+#pragma region Import and configure windows.h
 	#define NOGDICAPMASKS     // CC_*, LC_*, PC_*, CP_*, TC_*, RC_
 	#define NOVIRTUALKEYCODES // VK_*
 	#define NOWINMESSAGES     // WM_*, EM_*, LB_*, CB_*
@@ -92,13 +75,20 @@ static_assert(0, "Singularity annotation short name was already defined somewher
 // #include <ntstatus.h>
 
 
+// Configure base includes for shared base and libc
+#define _CRT_SECURE_NO_WARNINGS
+#include <utility>
+#include <memory>
+#include <intrin.h>
+
+
 // Configure and import external legacy libraries
 #ifndef NDEBUG
 #define SPDLOG_ACTIVE_LEVEL SPDLOG_LEVEL_TRACE
 #else
 #define SPDLOG_ACTIVE_LEVEL SPDLOG_LEVEL_INFO
 #endif
-#define SPDLOG_LEVEL_NAMES { "TRACE", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "OFF" }
+#define SPDLOG_LEVEL_NAMES { "TRACE", "DEBUG", "INFO", "WARNING", "ERROR", "FATAL", "OFF" }
 #define SPDLOG_NO_THREAD_ID
 #define SPDLOG_NO_ATOMIC_LEVELS
 #define SPDLOG_FMT_EXTERNAL
@@ -111,7 +101,7 @@ extern "C" {
 
 // Special logging functionalities 
 #define TRACE_FUNCTION_PROTO static_cast<void>(0)
-#define SPDLOG_SINGULARITY_SMALL_PATTERN "[%^%=8l%$] %v"
+#define SPDLOG_SINGULARITY_SMALL_PATTERN "[%^%=7l%$] %v"
 
 // Legacy style type helpers
 #define OFFSET_OF offsetof
@@ -121,5 +111,4 @@ extern "C" {
 // Project specific types with special meaning
 using offset_t = ptrdiff_t; // Type used to store an offset with a maximum capacity of the architectures size
 using byte_t = uint8_t;     // Type used to store arbitrary data in the form of a byte with 8 bits
-using rva_t = int32_t;      // Type used to describe a 31bit image relative offset, anything negactive is invalid
-
+using rva_t = int32_t;      // Type used to describe a 31bit image relative offset, anything negative is invalid

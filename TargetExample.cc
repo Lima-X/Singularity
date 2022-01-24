@@ -11,7 +11,10 @@
 int TestFunction(
     IN int Argument
 ) {
-    return Argument * 2;
+    SingularityVirtualCodeBegin();
+    auto Result = Argument % 2 ? Argument * 2 : 0;
+    SingularityVirtualCodeEnd();
+    return Result;
 }
 
 int EntryPoint(

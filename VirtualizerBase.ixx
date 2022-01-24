@@ -1,24 +1,18 @@
+// Implements and declares basic helpers and utilities,
+// including active template components and abstraction layers.
 // 
 module;
 
 #include "VirtualizerBase.h"
 #include <memory>
 #include <utility>
+#include <chrono>
+#include <cmath>
+#include <algorithm>
 
 export module VirtualizerBase;
 
-export class XedAbstractor {
-public:
-	XedAbstractor() {
-
-	}
-
-private:
-
-
-};
-
-// unique_ptr support for VirtualAlloc
+#pragma region Smart pointer abstractions for VirtualAlloc
 class VirtualDeleter {
 public:
 	void operator()(
@@ -70,6 +64,92 @@ MakeSmartPointerWithVirtualAlloc(
 				Wint32AllocationType,
 				Win32PageProtection)));
 }
+#pragma endregion
 
-// using MakeVirtualUniquePointer = decltype(MakeSmartPointerWithVirtualAlloc<std::unique_ptr>);
-// using MakeVirtualSharedPointer = decltype(MakeSmartPointerWithVirtualAlloc<std::shared_ptr>);
+// CRTP helper for abstracting and adding skills to a CRTP base
+export template<typename T>
+class CrtpHelp {
+public:
+	T& GetUnderlyingCrtpBase() {
+		TRACE_FUNCTION_PROTO; return static_cast<T&>(*this);
+	}
+	const T& GetUnderlyingCrtpBase() const {
+		TRACE_FUNCTION_PROTO; return static_cast<const T&>(*this);
+	}
+};
+
+// Text progress bar used for the console window title
+using namespace std::chrono_literals;
+namespace chrono = std::chrono;
+export class TextProgressBar {
+public:
+	
+	TextProgressBar(
+		OPT            size_t       DesiredProgressBarWidth = 24,
+		OPT    chrono::milliseconds IntervalBetweenRotation = 400ms,
+		OPT const std::string_view& UpdateIndicator = "|\0/\0-\0\\0\\0Done...\0"
+	)
+		: ProgressBarWidth(DesiredProgressBarWidth),
+		  IntervalBetweenRotation(IntervalBetweenRotation),
+		  UpdateIndicator(UpdateIndicator) {
+		TRACE_FUNCTION_PROTO;
+	}
+	
+	std::string UpdateProgress( // Updates the progress and by default returns a formatted string,
+								// the new progess cannot be less then the previous one,
+		                        // however it can be 0 to indecate the previous value
+		IN  float NewProgress,
+		OPT bool  ReturnFormatted = true
+	) {
+		if (!NewProgress)
+			NewProgress = CurrentProgress;
+		if (NewProgress < CurrentProgress)
+			throw std::logic_error("Cannot update progress to a smaller value");
+
+		CurrentProgress = std::clamp<float>(NewProgress, 0, 1);
+
+		if (ReturnFormatted) {
+
+			auto TimePointNow = chrono::steady_clock::now();
+			auto TimePassedIndicator = chrono::duration_cast<
+				chrono::milliseconds>(
+					TimePointNow - TimerSinceLastRotation);
+			if (TimePassedIndicator >= IntervalBetweenRotation) {
+
+				// Update work indicator
+				++RotationIndex;
+				TimerSinceLastRotation = TimePointNow;
+			}
+
+			// Format the progress bar and return string,
+			// the format spec for this function accepts specific values
+			// @0: An empty string used as a filler
+			// @1: The width of the total progress bar
+			// @2: The width for the current progress of the total width
+			// @3: The inverse of the above field
+			// @4: The the progress as a floating point from 0-100
+			// @5: The work indicator symbol
+			auto WidthOfProgress = std::lround(ProgressBarWidth * CurrentProgress);
+			return fmt::format("[[{0:#<{2}}{0:-<{3}}] {4}% [{5}]]", "",
+				ProgressBarWidth,
+				WidthOfProgress,
+				ProgressBarWidth - WidthOfProgress,
+				CurrentProgress * 100,
+				&UpdateIndicator.data()[(RotationIndex % 4) * 2]);
+		}
+
+		return{};
+	}
+
+	// constant progress format configuration
+	const std::string_view UpdateIndicator;
+	const chrono::milliseconds IntervalBetweenRotation;
+
+private:
+	size_t ProgressBarWidth;
+	size_t RotationIndex = 0;
+	float  CurrentProgress = 0;
+	
+	chrono::time_point<chrono::steady_clock>
+	TimerSinceLastRotation{};
+};

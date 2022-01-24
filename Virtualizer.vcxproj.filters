@@ -27,6 +27,9 @@
     <ClCompile Include="PathAnalyzer.ixx">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="ControlFlowGraph.ixx">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="VirtualizerBase.h">

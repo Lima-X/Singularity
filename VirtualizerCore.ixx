@@ -3,7 +3,8 @@
 
 #include "VirtualizerBase.h"
 
-import ImageHelpBase;
+import ImageHelp;
+import ControlFlowGraph;
 
 
 
@@ -12,6 +13,7 @@ enum EntryPointReturn : int32_t {
 	STATUS_FAILED_PROCESSING,
 	STATUS_FAILED_ARGUMENTS,
 	STATUS_FAILED_IMAGEHELP,
+	STATUS_FAILED_CFGTOOLS,
 
 	STATUS_SUCCESS = 0,
 
@@ -24,10 +26,9 @@ export int32_t main(
 
 	// Instantiate prerequisites such as loggers and external libraries
 	try {
+		xed_tables_init();
 		spdlog::set_pattern(SPDLOG_SINGULARITY_SMALL_PATTERN);
 		spdlog::set_level(spdlog::level::debug);
-		xed_tables_init();
-
 	}
 	catch (const spdlog::spdlog_ex& ExceptionInformation) {
 
@@ -49,6 +50,18 @@ export int32_t main(
 
 		TargetImage.MapImageIntoMemory();
 		TargetImage.RelocateImageToMappedOrOverrideBase();
+		
+		xed_state_t IntelXedConfiguration;
+		xed_state_init2(&IntelXedConfiguration,
+			XED_MACHINE_MODE_LONG_64,
+			XED_ADDRESS_WIDTH_64b);
+		
+		CfgGenerator ControlFlowGraphGenerator(TargetImage,
+			IntelXedConfiguration);
+		
+
+
+
 		TargetImage.ReconstructOptionalAndUnmapImage();
 
 
@@ -62,9 +75,16 @@ export int32_t main(
 			MapperException.ExceptionText);
 		return STATUS_FAILED_IMAGEHELP;
 	}
+	catch (const CfgException& CfgException) {
+
+		SPDLOG_ERROR("A CFG tool failed with [{}] : \"{}\"",
+			CfgException.StatusCode,
+			CfgException.ExceptionText);
+		return STATUS_FAILED_IMAGEHELP;
+	}
 	catch (const std::exception& ExceptionInformation) {
 
-		SPDLOG_ERROR("Primary execution failed with exception: {}",
+		SPDLOG_ERROR("Primary execution failed with standard exception: {}",
 			ExceptionInformation.what());
 		return STATUS_FAILED_PROCESSING;
 	}
