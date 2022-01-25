@@ -3,6 +3,7 @@ module;
 
 #include "VirtualizerBase.h"
 #include <vector>
+#include <tuple>
 
 export module ControlFlowGraph;
 export import ImageHelp;
@@ -14,6 +15,9 @@ public:
 		STATUS_INDETERMINED_FUNCTION = -2000,
 		STATUS_CODE_LEAVING_FUNCTION,
 		STATUS_CFGNODE_WAS_TERMINATED,
+		STATUS_XED_NO_MEMORY_BAD_POINTER,
+		STATUS_XED_BAD_CALLBACKS_OR_MISSING,
+		STATUS_XED_UNSUPPORTED_ERROR,
 
 		STATUS_INVALID_STATUS = 0
 	};
@@ -32,7 +36,7 @@ public:
 };
 
 // Function address abstraction used to denote addresses
-using FunctionAddress = std::pair<byte_t*, size_t>;
+export using FunctionAddress = std::pair<byte_t*, size_t>;
 
 export class ControlFlowGraph {
 	friend class CfgNode;
@@ -69,8 +73,13 @@ public:
 #pragma warning(push)
 #pragma warning(disable : 4201)
 			struct {
-				FlagsType NodeIsIncomplete : 1;
-				FlagsType NodeIsTerminator : 1;
+				FlagsType NodeTerminatesPath : 1; // Set if the node terminates the current branch of the path,
+				                                  // a path may have more than a single terminating node.
+				FlagsType NodeIsIncomplete   : 1; // Defines that this node terminates in an undesirable way,
+				                                  // the CFG will also have its incomplete path flag set.
+				                                  // A cfg containing a node with this flag will likely not be
+				                                  // analyzed and processed fully and therefore get removed
+				                                  // from the virtualization pool.
 			};
 			FlagsType Flags;
 #pragma warning(pop)
@@ -92,11 +101,17 @@ public:
 			return this->emplace_back();
 		}
 
+		void TerminateThisNodeAsCfgExit() {
+			TRACE_FUNCTION_PROTO;
+
+			CFlags.NodeTerminatesPath = true;
+		}
 		void SetNodeIsIncomplete() {
 			TRACE_FUNCTION_PROTO;
 
 			// If this function is called the node will be set as incomplete, be terminated
 			// and the holding code flow graph will be set as incomplete
+			TerminateThisNodeAsCfgExit();
 			CFlags.NodeIsIncomplete = true;
 			NodeHolder->BFlags.ContainsIncompletePaths = true;
 			SPDLOG_WARN("CfgNode for rva{:x} was marked incomplete at +{:x}",
@@ -105,6 +120,8 @@ public:
 				this->back().OriginalAddress -
 					NodeHolder->OwningImageMapping.GetImageFileMapping());
 		}
+		
+
 
 		enum NodeTerminationType {
 			NODE_IS_TERMINATOR_DEFECTIVE = -1,
@@ -117,7 +134,7 @@ public:
 			TRACE_FUNCTION_PROTO;
 
 			// Check if entry list has been terminated yet
-			if (!CFlags.NodeIsTerminator)
+			if (!CFlags.NodeTerminatesPath)
 				return NODE_IS_INDETERMINED_TYPE_E0;
 
 			// Otherwise determine node type by path configuration
@@ -192,10 +209,13 @@ private:
 // it simply isn't really possible to decompile an image on a whole program level,
 // at least not without writing millions of hysterics and special edge case handlers.
 export class CfgGenerator {
-	struct RecursiveDecentState {
-		ControlFlowGraph& CfgContext;
-		byte_t*           NextCodeAddress;
-		FunctionAddress   PredictedFunctionBounds;
+	struct RecursiveDecentState {                           // Defines the pass down stack state for the recursive disassembly engine
+		ControlFlowGraph&          CfgContext;              // Reference to the cfg used by the current engines stack   (passed down)
+		      byte_t*              NextCodeAddress;         // Virtual address for the next engine frame to disassemble (passed down)
+		const FunctionAddress      PredictedFunctionBounds; // Constants of the function frame itself, start and size   (passed down)
+		
+		ControlFlowGraph::CfgNode* ReturnedFloatingTree;    // A pointer to a linked floating assembled tree fragment   (passed up)
+		                                                    // The caller receiving will have to hook this into its node
 	};
 
 public:
@@ -213,7 +233,7 @@ public:
 	}
 
 	ControlFlowGraph GenerateControlFlowGraphFromFunction(
-		IN FunctionAddress PossibleFunction
+		IN const FunctionAddress& PossibleFunction
 	) {
 		TRACE_FUNCTION_PROTO;
 
@@ -251,12 +271,45 @@ public:
 		return CurrentCfgContext;
 	}
 
+#pragma region Minimal utilities
+	bool IsDecodedInstructionBranching(
+		IN xed_iclass_enum_t XedInstructionClass
+	) {
+		TRACE_FUNCTION_PROTO;
+		return XedInstructionClass >= XED_ICLASS_JB 
+			&& XedInstructionClass <= XED_ICLASS_JZ;
+	}
+	bool IsDecodedInstructionReturning(
+		IN xed_iclass_enum_t XedInstructionClass
+	) {
+		// IMPROVE: Probably really fucking inefficient but what gives, don't care right now
+		TRACE_FUNCTION_PROTO;
+		
+		static const xed_iclass_enum_t XedReturningClasses[]{
+			XED_ICLASS_IRET,
+			XED_ICLASS_IRETD,
+			XED_ICLASS_IRETQ,
+			XED_ICLASS_RET_FAR,
+			XED_ICLASS_RET_NEAR,
+			XED_ICLASS_SYSEXIT,
+			XED_ICLASS_SYSRET,
+			XED_ICLASS_SYSRET64,
+			XED_ICLASS_SYSRET_AMD
+		};
+		for (auto ReturningClass : XedReturningClasses)
+			if (ReturningClass == XedInstructionClass)
+				return true;
+		return false;		
+	}
+#pragma endregion
+
+
 
 
 private:
 	enum RecursiveDecentStatus {
-
 		STATUS_RECURSIVE_OK = 0,
+		STATUS_POTENTIALLY_BAD_DECODE,
 	};
 	RecursiveDecentStatus RecursiveDecentDisassembler(
 		IN RecursiveDecentState& CfgTraversalStack
@@ -268,9 +321,7 @@ private:
 
 		xed_error_enum_t IntelXedResult{};
 		do {
-
-			// Decode current instruction location
-
+			// Allocate instruction entry for current cfg node frame
 			auto& CfgNodeEntry = CfgNodeForCurrentFrame->AllocateCfgNodeEntry();
 			xed_decoded_inst_zero_set_mode(&CfgNodeEntry.DecodedInstruction,
 				&IntelXedState);
@@ -283,31 +334,136 @@ private:
 					CfgTraversalStack.PredictedFunctionBounds.second -
 					VirtualInstructionPointer) & 15);
 			
+			#define CFGEXCEPTION_FOR_XED_ERROR(ErrorType, StatusCode, ExceptionText, ...)\
+			case (ErrorType):\
+				throw CfgException(\
+					fmt::format((ExceptionText), __VA_ARGS__),\
+					(StatusCode))
+			static const char* XedBadDecode[]{
+				"XED_ERROR_GENERAL_ERROR",
+				"XED_ERROR_INVALID_FOR_CHIP",
+				"XED_ERROR_BAD_REGISTER",
+				"XED_ERROR_BAD_LOCK_PREFIX",
+				"XED_ERROR_BAD_REP_PREFIX",
+				"XED_ERROR_BAD_LEGACY_PREFIX",
+				"XED_ERROR_BAD_REX_PREFIX",
+				"XED_ERROR_BAD_EVEX_UBIT",
+				"XED_ERROR_BAD_MAP",
+				"XED_ERROR_BAD_EVEX_V_PRIME",
+				"XED_ERROR_BAD_EVEX_Z_NO_MASKING" };
+			static const char* XedTextError[]{
+				"A memory operand index was not 0 or 1 during decode", 
+				nullptr,
+				"Xed encountered AVX2 gathers with invalid index, destination and mask register combinations",
+				"Xed encountered an instruction that exceeds the physical instruction limit for x64",
+				"Xed encountered an instruction that is invalid on the current specified mode of x64",
+				"Xed encountered an EVEX.LL that cannot be equal to 3 unless embedded rounding is enabled",
+				"Xed encountered an instruction which cannot have the same register for destination and source"
+			};
 			switch (IntelXedResult) {
-			case XED_ERROR_NONE: // Continue execution, no errors
-				break;
-			case XED_ERROR_BUFFER_TOO_SHORT: // Critical, xed detected code outside of the allowed frame
-				throw CfgException(
-					fmt::format("Intel xed could not read full instruction at {}, possibly invalid function [{}:{}]",
-						static_cast<void*>(VirtualInstructionPointer),
-						static_cast<void*>(CfgTraversalStack.PredictedFunctionBounds.first),
-						CfgTraversalStack.PredictedFunctionBounds.second),
-					CfgException::STATUS_CODE_LEAVING_FUNCTION);
-			case XED_ERROR_GENERAL_ERROR:
-				// CfgNodeEntry.
+			case XED_ERROR_NONE: {
 
-			default:
+				// Xed successfully decoded the instruction, copy the instruction to the cfg entry
+				auto InstructionLength = xed_decoded_inst_get_length(&CfgNodeEntry.DecodedInstruction);
+				memcpy(&CfgNodeEntry.InstructionText,
+					VirtualInstructionPointer,
+					InstructionLength);
+				memset(&CfgNodeEntry.InstructionText + InstructionLength,
+					0,
+					15 - InstructionLength);
+				auto XedInstrctionClass = xed_decoded_inst_get_iclass(&CfgNodeEntry.DecodedInstruction);
+				SPDLOG_DEBUG("Decoded instruction at rip={} to iclass={}",
+					static_cast<void*>(VirtualInstructionPointer),
+					XedInstrctionClass);
+
+				// Determine the type of instruction, first check if the instruction could terminate the node
+				if (IsDecodedInstructionReturning(XedInstrctionClass)) {
+
+					// Terminate the node and return constructed tree
+					CfgNodeForCurrentFrame->TerminateThisNodeAsCfgExit();
+					CfgTraversalStack.ReturnedFloatingTree = CfgNodeForCurrentFrame;
+					return STATUS_RECURSIVE_OK;
+				}
+				
+				// After that we check if the instruction could branch out and invoke ourself for the branch
+				if (IsDecodedInstructionBranching(XedInstrctionClass)) {
+
+					// TODO: We need to check the type of branch we encountered, then determin the new locations
+					//       branch out and analyze those parts, the returned assembled tree will then be hooked into our tree
+					//       and we then return that or continue depending on state
+
+					// TODO: write this
+				}
+								
+				// No special instruction decoded, continue decoding node linearly
 				break;
 			}
+			
+			CFGEXCEPTION_FOR_XED_ERROR(XED_ERROR_BUFFER_TOO_SHORT,
+				CfgException::STATUS_CODE_LEAVING_FUNCTION,
+				"Intel xed could not read full instruction at {}, possibly invalid function [{}:{}]",
+				static_cast<void*>(VirtualInstructionPointer),
+				static_cast<void*>(CfgTraversalStack.PredictedFunctionBounds.first),
+				CfgTraversalStack.PredictedFunctionBounds.second);
 
+			case XED_ERROR_GENERAL_ERROR:
+			case XED_ERROR_INVALID_FOR_CHIP:
+			case XED_ERROR_BAD_REGISTER:
+			case XED_ERROR_BAD_LOCK_PREFIX:
+			case XED_ERROR_BAD_REP_PREFIX:
+			case XED_ERROR_BAD_LEGACY_PREFIX:
+			case XED_ERROR_BAD_REX_PREFIX:
+			case XED_ERROR_BAD_EVEX_UBIT:
+			case XED_ERROR_BAD_MAP:
+			case XED_ERROR_BAD_EVEX_V_PRIME:
+			case XED_ERROR_BAD_EVEX_Z_NO_MASKING:
+				CfgNodeForCurrentFrame->SetNodeIsIncomplete();
+				SPDLOG_WARN("A bad decode of type {} was raised by xed, state could be invalid",
+					XedBadDecode[IntelXedResult - XED_ERROR_GENERAL_ERROR]);
+				break;
+
+			CFGEXCEPTION_FOR_XED_ERROR(XED_ERROR_NO_OUTPUT_POINTER,
+				CfgException::STATUS_XED_NO_MEMORY_BAD_POINTER,
+				"The output parameter to the decoded instruction type for xed was null");
+			CFGEXCEPTION_FOR_XED_ERROR(XED_ERROR_NO_AGEN_CALL_BACK_REGISTERED,
+				CfgException::STATUS_XED_BAD_CALLBACKS_OR_MISSING,
+				"One of both of xeds AGEN callbacks were missing during decode");
+			CFGEXCEPTION_FOR_XED_ERROR(XED_ERROR_CALLBACK_PROBLEM,
+				CfgException::STATUS_XED_BAD_CALLBACKS_OR_MISSING,
+				"Xeds AGEN register or segment callback issued an error during decode");
+
+			case XED_ERROR_BAD_MEMOP_INDEX:
+			case XED_ERROR_GATHER_REGS:
+			case XED_ERROR_INSTR_TOO_LONG:
+			case XED_ERROR_INVALID_MODE:
+			case XED_ERROR_BAD_EVEX_LL:
+			case XED_ERROR_BAD_REG_MATCH:
+				CfgNodeForCurrentFrame->SetNodeIsIncomplete();
+				SPDLOG_WARN(XedTextError[IntelXedResult - XED_ERROR_BAD_MEMOP_INDEX]);
+				break;
+			
+			default:
+				throw CfgException(
+					fmt::format("Singularity's intelxed error handler encountered an unsupported xed error type {}",
+						IntelXedResult),
+					CfgException::STATUS_XED_UNSUPPORTED_ERROR);				
+			}
+			#undef CFGEXCEPTION_FOR_XED_ERROR
 
 		} while (1);
+	
+	QUICK_EXIT_DECODER_LOOP:;
 
 
+		// 
 
 
 	}
 
+
+
 	const ImageHelp&  ImageMapping;
 	const xed_state_t IntelXedState;
 };
+
+

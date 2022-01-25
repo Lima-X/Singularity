@@ -78,7 +78,7 @@ public:
 	}
 };
 
-// Text progress bar used for the console window title
+// Text progress bar, temp, will be used later for statstics when im done with the CFG generator
 using namespace std::chrono_literals;
 namespace chrono = std::chrono;
 export class TextProgressBar {
@@ -87,7 +87,7 @@ public:
 	TextProgressBar(
 		OPT            size_t       DesiredProgressBarWidth = 24,
 		OPT    chrono::milliseconds IntervalBetweenRotation = 400ms,
-		OPT const std::string_view& UpdateIndicator = "|\0/\0-\0\\0\\0Done...\0"
+		OPT const std::string_view& UpdateIndicator = "|\0/\0-\0\\\0Done...\0"
 	)
 		: ProgressBarWidth(DesiredProgressBarWidth),
 		  IntervalBetweenRotation(IntervalBetweenRotation),
@@ -96,17 +96,17 @@ public:
 	}
 	
 	std::string UpdateProgress( // Updates the progress and by default returns a formatted string,
-								// the new progess cannot be less then the previous one,
-		                        // however it can be 0 to indecate the previous value
+								// the new progress cannot be less then the previous one,
+		                        // however it can be 0 to indicate the previous value
 		IN  float NewProgress,
 		OPT bool  ReturnFormatted = true
 	) {
-		if (!NewProgress)
+		NewProgress = std::clamp<float>(NewProgress, 0, 1);
+		if (NewProgress == 0)
 			NewProgress = CurrentProgress;
 		if (NewProgress < CurrentProgress)
 			throw std::logic_error("Cannot update progress to a smaller value");
-
-		CurrentProgress = std::clamp<float>(NewProgress, 0, 1);
+		CurrentProgress = NewProgress;
 
 		if (ReturnFormatted) {
 
@@ -121,14 +121,6 @@ public:
 				TimerSinceLastRotation = TimePointNow;
 			}
 
-			// Format the progress bar and return string,
-			// the format spec for this function accepts specific values
-			// @0: An empty string used as a filler
-			// @1: The width of the total progress bar
-			// @2: The width for the current progress of the total width
-			// @3: The inverse of the above field
-			// @4: The the progress as a floating point from 0-100
-			// @5: The work indicator symbol
 			auto WidthOfProgress = std::lround(ProgressBarWidth * CurrentProgress);
 			return fmt::format("[[{0:#<{2}}{0:-<{3}}] {4}% [{5}]]", "",
 				ProgressBarWidth,

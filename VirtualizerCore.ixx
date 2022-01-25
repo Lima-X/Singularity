@@ -59,8 +59,17 @@ export int32_t main(
 		CfgGenerator ControlFlowGraphGenerator(TargetImage,
 			IntelXedConfiguration);
 		
+		// Enumerate all function entries here
+		auto RuntimeFunctionsView = TargetImage.GetRuntimeFunctionTable();
+		for (const RUNTIME_FUNCTION& RuntimeFunction : RuntimeFunctionsView) {
 
+			// Generate Cfg from function
+			auto GraphForRuntimeFunction = ControlFlowGraphGenerator.GenerateControlFlowGraphFromFunction(
+				FunctionAddress(
+					RuntimeFunction.BeginAddress + TargetImage.GetImageFileMapping(),
+					RuntimeFunction.EndAddress - RuntimeFunction.BeginAddress));
 
+		}
 
 		TargetImage.ReconstructOptionalAndUnmapImage();
 
@@ -75,12 +84,12 @@ export int32_t main(
 			MapperException.ExceptionText);
 		return STATUS_FAILED_IMAGEHELP;
 	}
-	catch (const CfgException& CfgException) {
+	catch (const CfgException& GraphException) {
 
 		SPDLOG_ERROR("A CFG tool failed with [{}] : \"{}\"",
-			CfgException.StatusCode,
-			CfgException.ExceptionText);
-		return STATUS_FAILED_IMAGEHELP;
+			GraphException.StatusCode,
+			GraphException.ExceptionText);
+		return STATUS_FAILED_CFGTOOLS;
 	}
 	catch (const std::exception& ExceptionInformation) {
 

@@ -12,6 +12,7 @@ module;
 export module ImageHelp;
 export import VirtualizerBase;
 
+
 // ImageHelp module exception report model implementation,
 // all tools of this toolset throw this type when they encounter a fatal issue
 export class ImageHelpException {
@@ -299,7 +300,7 @@ public:
 		auto ImageHeader = reinterpret_cast<IMAGE_NT_HEADERS*>(
 			ReservedMemory2.get() + ModuleHeaderOffset);
 		auto ImageFileCheckPattern = 0;
-	#define MERGE_CHECK_IMAGE(FailureExpression) (ImageFileCheckPattern |= (FailureExpression) << (--NumberOfMergeChecks))
+		#define MERGE_CHECK_IMAGE(FailureExpression) (ImageFileCheckPattern |= (FailureExpression) << (--NumberOfMergeChecks))
 		{
 			// If any of these tests fail the image is not suitable for the processing that will/could be applied later on
 			auto NumberOfMergeChecks = 5;
@@ -311,7 +312,7 @@ public:
 				ImageHeader->OptionalHeader.FileAlignment < 512 ||
 				ImageHeader->OptionalHeader.FileAlignment > 512 * 128);
 		}
-	#undef MERGE_CHECK_IMAGE
+		#undef MERGE_CHECK_IMAGE
 		if (ImageFileCheckPattern)
 			throw ImageHelpException(
 				fmt::format("The image opened is not suitable for processing, detected [{:05b}] failures",
@@ -563,6 +564,7 @@ private:
 	MAP_ENUM_TO_TYPE(GET_OPTIONAL_HEADER, IMAGE_OPTIONAL_HEADER&);
 	MAP_ENUM_TO_TYPE(GET_DATA_DIRECTORIES, std::span<IMAGE_DATA_DIRECTORY>);
 	MAP_ENUM_TO_TYPE(GET_SECTION_HEADERS, std::span<IMAGE_SECTION_HEADER>);
+	#undef MAP_ENUM_TO_TYPE
 public:
 
 	template<SupportedCoffGetters TypeTag>
@@ -607,53 +609,52 @@ private:
 	HANDLE FileHandle = INVALID_HANDLE_VALUE;
 };
 
+
+// A skillset for the ImageLoader class template, this can be installed into the image loaders statically
+// this provides access to higher level data structures of the PE-COFF file such as functions, sections
+// and more in the future, as this class will be used as the image editor to allow the virtualizer
+// to write to the image in an abstracted way.
 template<typename T>
 class ImageEditor 
-	: private CrtpHelp<T> {
+	: public CrtpHelp<T> {
 public:
 #pragma region Exception directory parser and editor components
-	std::span<const RUNTIME_FUNCTION> GetRuntimeFuntionTable() const {
+	std::span<const RUNTIME_FUNCTION> GetRuntimeFunctionTable() const {
 		TRACE_FUNCTION_PROTO;
 
 		// Locate the runtime function table and test, then return view
 		auto& Underlying = this->GetUnderlyingCrtpBase();
-		IMAGE_DATA_DIRECTORY& ExceptionDirectroy = GetCoffMemberByTemplateId<
-			ImageLoader::GET_DATA_DIRECTORIES>()[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
-		if (!ExceptionDirectroy)
-			return {};
-
+		IMAGE_DATA_DIRECTORY& ExceptionDirectroy = Underlying.GetCoffMemberByTemplateId<
+			T::GET_DATA_DIRECTORIES>()[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
+		
 		return std::span(
-			reinterpret_cast<PRUNTIME_FUNCTION>(
+			reinterpret_cast<const PRUNTIME_FUNCTION>(
 				ExceptionDirectroy.VirtualAddress
-					+ Underlying.GetImageFileMapping(),
-				ExceptionDirectroy.Size / sizeof(RUNTIME_FUNCTION)));
+					+ Underlying.GetImageFileMapping()),
+				ExceptionDirectroy.Size / sizeof(RUNTIME_FUNCTION));
 	}
-	PRUNTIME_FUNCTION GetRuntimeFuntionForAddress(
+	PRUNTIME_FUNCTION GetRuntimeFunctionForAddress(
 		IN rva_t RvaWithinPossibleFunction
 	) {
 		TRACE_FUNCTION_PROTO;
-		auto ViewOfFunctionTable = GetRuntimeFuntionTable();
+		auto ViewOfFunctionTable = GetRuntimeFunctionTable();
 		for (auto& FunctionEntry : ViewOfFunctionTable)
 			if (FunctionEntry.BeginAddress <= RvaWithinPossibleFunction &&
 				FunctionEntry.EndAddress >= RvaWithinPossibleFunction)
 				return &FunctionEntry;
 		return nullptr;
 	}
-	PRUNTIME_FUNCTION GetRuntimeFuntionForAddress(
+	PRUNTIME_FUNCTION GetRuntimeFunctionForAddress(
 		IN byte_t* VirtualAddressWithinPossibleFunction
 	) {
 		TRACE_FUNCTION_PROTO;
-		return GetRuntimeFuntionForAddress(
+		return GetRuntimeFunctionForAddress(
 			reinterpret_cast<rva_t>(
 				VirtualAddressWithinPossibleFunction
 					- this->GetUnderlyingCrtpBase().GetImageFileMapping()));
 	}
-
 #pragma endregion
-
-
-
 };
 
-
+// Special public name for the image loader and image editor (etc.) tool
 export using ImageHelp = ImageLoader<ImageEditor>;
