@@ -30,6 +30,9 @@
     <ClCompile Include="ControlFlowGraph.ixx">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="StatisticsTracker.ixx">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="VirtualizerBase.h">
