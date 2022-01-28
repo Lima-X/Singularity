@@ -21,6 +21,10 @@
 #pragma endregion
 
 
+// Disable anonymous class type warning, supported by all major compilers
+#pragma warning(disable : 4201)
+
+
 // Disable specific API sets to reduce header size
 #pragma region Import and configure windows.h
 	#define NOGDICAPMASKS     // CC_*, LC_*, PC_*, CP_*, TC_*, RC_

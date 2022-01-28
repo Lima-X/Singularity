@@ -3,7 +3,7 @@ module;
 
 #include "VirtualizerBase.h"
 #include <vector>
-#include <tuple>
+#include <functional>
 
 export module ControlFlowGraph;
 export import ImageHelp;
@@ -19,6 +19,7 @@ public:
 		STATUS_XED_BAD_CALLBACKS_OR_MISSING,
 		STATUS_XED_UNSUPPORTED_ERROR,
 		STATUS_MISMATCHING_CFG_OBJECT,
+		STATUS_DFS_INVALID_NULLPTR_CALL,
 
 		STATUS_INVALID_STATUS = 0
 	};
@@ -46,13 +47,10 @@ public:
 	union CfgGlobalFlags {
 		using FlagsType = uint8_t;
 
-#pragma warning(push)
-#pragma warning(disable : 4201)
 		struct {
 			FlagsType ContainsIncompletePaths : 1;
 		};
 		FlagsType Flags;
-#pragma warning(pop)
 	};
 
 	struct CfgEntry {
@@ -65,14 +63,13 @@ public:
 	class CfgNode : 
 		protected std::vector<CfgEntry> {
 		friend ControlFlowGraph;
+		friend class CfgGenerator;
 	public:
 		using UnderlyingType = std::vector<CfgEntry>;
 
 		union CfgFlagsUnion {
 			using FlagsType = uint8_t;
 
-#pragma warning(push)
-#pragma warning(disable : 4201)
 			struct {
 				FlagsType NodeTerminatesPath : 1; // Set if the node terminates the current branch of the path,
 				                                  // a path may have more than a single terminating node.
@@ -84,7 +81,6 @@ public:
 				FlagsType ReservedFlags      : 6; // Reserved flags (for completions sake)
 			};
 			FlagsType Flags;
-#pragma warning(pop)
 		};
 
 
@@ -147,22 +143,25 @@ public:
 			NODE_IS_TERMINATOR_DEFECTIVE = -1, // The node is incomplete and contains a non canonical exit location
 			NODE_IS_INDETERMINED_TYPE,         // The type of node is not yet known, this is the default for unlinked
 			NODE_IS_TERMINATOR_CANONICAL,      // Node has no branches, but is canonical, it terminates the path
-			NODE_IS_UNCONDITIONAL_BRANCH,      // 
-			NODE_IS_CONDITIONAL_BRANCHIN,
-			NODE_IS_FALLTHROUGH_BRANCHIN
+			NODE_IS_UNCONDITIONAL_BRANCH,      // Unconditionally jumps to the new location, fallthrough unknown
+			NODE_IS_CONDITIONAL_BRANCHIN,      // Can fall trhough left or jump to the right, branching terminator
+			NODE_IS_FALLTHROUGH_BRANCHIN,      // No branch and no terminator, the node falls through due to a input
+			NODE_IS_JUMPTABLE_BRANCHING        // The right node is no a single branch but an array of branches
 		};
 		NodeTerminationType DeterminNodeTypeDynamic() {
 			TRACE_FUNCTION_PROTO;
 
-			// Check if this node is linked, if not its type is indeterminable 
-			if (this->empty())
+			// Check if this node is linked, if not its type is indeterminable
+			if (InputFlowNodeLinks.empty())
 				return NODE_IS_INDETERMINED_TYPE;
 			
 			// Otherwise determine node type by path configuration
-			if (BranchingOutRightNode) {
+			if (BranchingOutRightNode.size()) {
 				if (NonBranchingLeftNode)
 					return NODE_IS_CONDITIONAL_BRANCHIN;
-				return NODE_IS_UNCONDITIONAL_BRANCH;
+
+				return BranchingOutRightNode.size() > 1 ? NODE_IS_JUMPTABLE_BRANCHING
+					: NODE_IS_UNCONDITIONAL_BRANCH;
 			}
 			return CFlags.NodeIsIncomplete ? NODE_IS_TERMINATOR_DEFECTIVE 
 				: NODE_IS_TERMINATOR_CANONICAL;
@@ -191,13 +190,14 @@ public:
 		// a linked non floating node will always have at least one entry.
 		std::vector<CfgNode*> InputFlowNodeLinks;
 
-		// There are 4 configurations in which ways this LR-pair could be set
-		// 1. Both are set, this nodes last entry is a conditional jump (jcc)
-		// 2. Left node is set, this node has a fall through into the next
-		// 3. The right node is set, this nodes last entry is a unconditional
-		// 4. Non of the nodes are set, this node terminates a the node (ret)
+		// There are 4(5) configurations in which ways this LR-pair could be set
+		// 1.    Both are set, this nodes last entry is a conditional jump (jcc)
+		// 2.    Left node is set, this node has a fall through into the next
+		// 3.    The right node is set, this nodes last entry is a unconditional
+		// 3.Ex: The right node is a node, node points to a jump table (jmp [+])
+		// 4.    Non of the nodes are set, this node terminates a the node (ret)
 		CfgNode* NonBranchingLeftNode = nullptr;
-		CfgNode* BranchingOutRightNode = nullptr;
+		std::vector<CfgNode*> BranchingOutRightNode{};
 #pragma endregion
 	};
 
@@ -216,6 +216,66 @@ public:
 		TRACE_FUNCTION_PROTO; return InitialControlFlowGraphHead;
 	}
 
+
+
+#pragma region Graph traversal interface
+	enum TreeTraversalMode { // Adding 2 of modulus 6 to each value of the enum will resul in the next logical operation,
+		                     // DO NOT MODIFY THE ORDER OF THESE ENUMS!
+		SEARCH_PREORDER_NLR, 
+		SEARCH_INORDER_LNR,
+		SEARCH_POSTORDER_LRN,
+		SEARCH_REVERSE_PREORDER_NRL,
+		SEARCH_REVERSE_INORDER_RNL,
+		SEARCH_REVERSE_POSTORDER_RLN,
+	};
+	using NodeModifierCallback = bool(INOUT CfgNode*); 
+	CfgNode* LocateNodeBySpecializedDFS(
+		TreeTraversalMode                   SearchMode,
+		std::function<NodeModifierCallback> CfgCallback
+	) {
+		TRACE_FUNCTION_PROTO;
+		
+		// Initialize graph traversal stack state
+		RecursiveTraversalState TraversalStack{
+			.SelectedTraversalMode = SearchMode,
+			.CurrentCfgNode = InitialControlFlowGraphHead,
+			.CfgCallback = std::move(CfgCallback)
+		};
+
+		// Search driver: call into recursive function and start the actual search, then handle errors
+		auto Result = RecursiveUniversalOverlapSearchInternal(TraversalStack);
+		switch (Result) {
+		case STATUS_RECURSIVE_OK:
+			return nullptr;
+		case STATUS_PREMATURE_RETURN:
+			return TraversalStack.ReturnTargetValue;
+		case STATUS_NULLPOINTER_CALL:
+			throw CfgException("DFS cannot return null pointer call to the driver",
+				CfgException::STATUS_DFS_INVALID_NULLPTR_CALL);
+		}
+	}
+
+
+
+	enum RTLDFSMode {
+		SEARCH_IDENTICAL_HEAD,
+		SEARCH_IDENTICAL_END,
+		SEARCH_COLLIDES_INTERVAL
+	};
+	CfgNode* LocateNodeByOverlapRTLDFSearch(                     // aka performs a RLN (reverse pre order) traversal
+		IN RTLDFSMode                 TraversalMode,             // A mode in which the search should compare addresses
+		IN uintptr_t                  OverlayingPhysicalAddress  // The address to index into the tree if no entry is found
+	) {
+		TRACE_FUNCTION_PROTO;
+
+		return nullptr;
+
+
+
+	}
+#pragma endregion
+
+
 private:
 	ControlFlowGraph(
 		IN const ImageHelp&       ImageMapping,
@@ -225,6 +285,66 @@ private:
 		  FunctionLimits(FunctionLimits) {
 		TRACE_FUNCTION_PROTO;
 	}
+
+#pragma region Graph treversal internal interfaces
+	struct RecursiveTraversalState {
+		IN  const TreeTraversalMode             SelectedTraversalMode;
+		IN  CfgNode*                            CurrentCfgNode;
+		IN  std::function<NodeModifierCallback> CfgCallback;
+		OUT CfgNode*                            ReturnTargetValue;
+	};
+	enum RecursiveDescentStatus {
+		STATUS_RECURSIVE_OK = 0,
+
+		STATUS_PREMATURE_RETURN,
+		STATUS_NULLPOINTER_CALL,
+
+	};
+	RecursiveDescentStatus RecursiveUniversalOverlapSearchInternal(
+		INOUT RecursiveTraversalState& SearchTraversalStack
+	) {
+		TRACE_FUNCTION_PROTO;
+
+		// Checkout stack arguments, the function may internally call with nullptr cause it makes the rest of the code easy 
+		if (!SearchTraversalStack.CurrentCfgNode)
+			return STATUS_NULLPOINTER_CALL;
+		auto SelectedNodeForFrame = SearchTraversalStack.CurrentCfgNode;
+
+		// Traverse transformation loop, this is a cursed common increment chain based on the values of the enum
+		for (auto i = 0; i < 6; i += 2)
+			switch ((SearchTraversalStack.SelectedTraversalMode + i) % 6) {
+			case SEARCH_REVERSE_PREORDER_NRL:
+			case SEARCH_PREORDER_NLR:
+				if (SearchTraversalStack.CfgCallback(
+					SelectedNodeForFrame)) {
+
+					SearchTraversalStack.ReturnTargetValue = SelectedNodeForFrame;
+					SPDLOG_DEBUG("Found CFG-Node {} for request",
+						static_cast<void*>(SelectedNodeForFrame));
+					return STATUS_PREMATURE_RETURN;
+				}
+
+			case SEARCH_POSTORDER_LRN:
+			case SEARCH_INORDER_LNR:
+				SearchTraversalStack.CurrentCfgNode = SelectedNodeForFrame->NonBranchingLeftNode;
+				if (RecursiveUniversalOverlapSearchInternal(SearchTraversalStack) == STATUS_PREMATURE_RETURN)
+					return STATUS_PREMATURE_RETURN;
+
+			case SEARCH_REVERSE_POSTORDER_RLN:
+			case SEARCH_REVERSE_INORDER_RNL:
+				for (auto NodeEntry : SelectedNodeForFrame->BranchingOutRightNode) {
+
+					SearchTraversalStack.CurrentCfgNode = NodeEntry;
+					if (RecursiveUniversalOverlapSearchInternal(SearchTraversalStack) == STATUS_PREMATURE_RETURN)
+						return STATUS_PREMATURE_RETURN;
+				}
+			}
+
+		return STATUS_RECURSIVE_OK;
+	}
+#pragma endregion 
+
+
 
 	const ImageHelp&      OwningImageMapping;
 	const FunctionAddress FunctionLimits;
@@ -389,7 +509,7 @@ private:
 					CfgTraversalStack.PredictedFunctionBounds.second -
 					VirtualInstructionPointer) & 15);
 
-#define CFGEXCEPTION_FOR_XED_ERROR(ErrorType, StatusCode, ExceptionText, ...)\
+			#define CFGEXCEPTION_FOR_XED_ERROR(ErrorType, StatusCode, ExceptionText, ...)\
 			case (ErrorType):\
 				throw CfgException(\
 					fmt::format((ExceptionText), __VA_ARGS__),\
