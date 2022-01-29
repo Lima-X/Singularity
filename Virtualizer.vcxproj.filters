@@ -18,19 +18,16 @@
     <ClCompile Include="ImageHelp.ixx">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="VirtualizerBase.ixx">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="VirtualizerCore.ixx">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="PathAnalyzer.ixx">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="ControlFlowGraph.ixx">
+    <ClCompile Include="StatisticsTracker.ixx">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="StatisticsTracker.ixx">
+    <ClCompile Include="DecompilerEngine.ixx">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

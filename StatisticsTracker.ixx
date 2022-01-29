@@ -7,6 +7,7 @@ module;
 #include <algorithm>
 
 export module StatisticsTracker;
+import DecompilerEngine;
 
 using namespace std::chrono_literals;
 namespace chrono = std::chrono;
@@ -100,26 +101,76 @@ private:
 "{0:-<{3}}\n"\
 "Frames analyzed: {} |"\
 "Total CFG-Nodes: {} |"\
+": {} |"\
+": {} |"\
+": {} |"\
+": {} |"\
 "Virtual frames:  {} |"\
-""
+"{0:-<{3}}\n"\
+"Analyzing {}:{}"
 
 
 
-export class StatisticsTracker {
+export class StatisticsTracker 
+	: public IDecompilerTracker {
 public:
 	using IntergerCountRatio = std::pair<uint32_t, uint32_t>;
 
 	StatisticsTracker(
 		IN chrono::milliseconds UpdateRefreshRateInterval
 	) {
+		TRACE_FUNCTION_PROTO;
+
 
 	}
 
+	void operator()(
+		IN IDecompilerTracker::InformationUpdateType InformationType,
+		IN IDecompilerTracker::UpdateInformation     UpdateType
+		) const override {
+		TRACE_FUNCTION_PROTO;
+
+		switch (InformationType) {
+		case IDecompilerTracker::TRACKER_CFGNODE_COUNT:
+			++NumberOfNodesAnalyzed; break;
+		case IDecompilerTracker::TRACKER_OVERLAYING_COUNT:
+			++NumberOfOverlayDefects; break;
+		case IDecompilerTracker::TRACKER_INSTRUCTION_COUNT:
+			++NumberOfInstructions; break;
+		case IDecompilerTracker::TRACKER_DECODE_ERRORS:
+			++NumberOfDecodeErrors; break;
+		case IDecompilerTracker::TRACKER_HEURISTICS_TRIGGER:
+			++NoHeuristicsTriggered; break;
+		case IDecompilerTracker::TRACKER_SPLICED_NODES:
+			++NumberOfSlicedNodes; break;
+		case IDecompilerTracker::TRACKER_STRIPPED_NODES:
+			++NumberOfStrippedNodes; break;
+		}
+	}
+
+	void TryPrint() {
+		TRACE_FUNCTION_PROTO;
+
+
+
+	}
 
 private:
 	IntergerCountRatio NumberOfFunctions;
-	uint32_t NumberOfNodesAnalyzed;
+	TextProgressBar    GlobalProgress;
+	TextProgressBar    VirtualFrameProgress;
 
+	// Standard expected 
+	mutable uint32_t NumberOfNodesAnalyzed;
+	mutable uint32_t NumberOfInstructions;
+	mutable uint32_t NumberOfStrippedNodes;
+	mutable uint32_t NumberOfSlicedNodes;
+	mutable uint32_t NoHeuristicsTriggered;
+
+	// Defects and errors and issues
+	mutable uint32_t NumberOfOverlayDefects;
+	mutable uint32_t NumberOfUnresolvedBr;
+	mutable uint32_t NumberOfDecodeErrors;
 	
 };
 

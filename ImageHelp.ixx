@@ -10,7 +10,6 @@ module;
 #include <concepts>
 
 export module ImageHelp;
-export import VirtualizerBase;
 
 
 // ImageHelp module exception report model implementation,
