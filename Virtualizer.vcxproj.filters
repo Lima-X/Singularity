@@ -30,6 +30,9 @@
     <ClCompile Include="DecompilerEngine.ixx">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="SymbolHelp.ixx">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="VirtualizerBase.h">

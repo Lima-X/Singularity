@@ -13,7 +13,8 @@ export module DecompilerEngine;
 export import ImageHelp;
 
 // Implements the cfg exception model used to report exceptions from this module
-export class CfgException {
+export class CfgToolException
+	: public CommonExceptionType {
 public:
 	enum ExceptionCode {
 		STATUS_INDETERMINED_FUNCTION = -2000,
@@ -30,17 +31,15 @@ public:
 		STATUS_INVALID_STATUS = 0
 	};
 
-	CfgException(
+	CfgToolException(
 		IN const std::string_view& ExceptionText,
 		IN       ExceptionCode     StatusCode
 	)
-		: ExceptionText(ExceptionText),
-		StatusCode(StatusCode) {
+		: CommonExceptionType(ExceptionText,
+			StatusCode,
+			CommonExceptionType::EXCEPTION_CFG_TOOLSET ) {
 		TRACE_FUNCTION_PROTO;
 	}
-
-	const std::string_view ExceptionText;
-	const ExceptionCode    StatusCode;
 };
 
 // Function address abstraction used to denote addresses
@@ -121,18 +120,18 @@ public:
 			return this->emplace_back();
 		}
 
-		void LinkNodeIntoRemoteNodeInputList( // Hooks a this cfg node into the inbound list of the remote node
+		void LinkNodeIntoRemoteNodeInputList( // Hooks this cfg node into the inbound list of the remote node
 			IN CfgNode& ReferencingCfgNode    // The remote node of the same cfg to be linked into
 		) {
 			TRACE_FUNCTION_PROTO;
 
 			// Check if remote node is part of the same control flow graph allocation
 			if (ReferencingCfgNode.NodeHolder != NodeHolder)
-				throw CfgException(
+				throw CfgToolException(
 					fmt::format("Could not link in rmeote node, remote is not part of the same cfg [{}:{}]",
 						static_cast<void*>(ReferencingCfgNode.NodeHolder),
 						static_cast<void*>(NodeHolder)),
-					CfgException::STATUS_MISMATCHING_CFG_OBJECT);
+					CfgToolException::STATUS_MISMATCHING_CFG_OBJECT);
 
 			ReferencingCfgNode.InputFlowNodeLinks.push_back(this);
 		}
@@ -161,7 +160,7 @@ public:
 			for (auto Node : InputFlowNodeLinks) {
 
 				if (Node->NonBranchingLeftNode == this)
-					NonBranchingLeftNode->NonBranchingLeftNode = SplicedNodeHead;
+					Node->NonBranchingLeftNode = SplicedNodeHead;
 				for (auto& Link : Node->BranchingOutRightNode)
 					if (Link == this) {
 						Link = SplicedNodeHead; break;
@@ -353,8 +352,8 @@ public:
 		// this was done in order to aid with performance as a bit stack would allow nested traversal,
 		// but would require a repaint before or after each search, in order to keep track of visited nodes.
 		if (BFlags.TreeIsBeingTraversed)
-			throw CfgException("Cannot traverse graph within a traversal process, nested traversal is not supported",
-				CfgException::STATUS_NESTED_TRAVERSAL_DISALLOWED);
+			throw CfgToolException("Cannot traverse graph within a traversal process, nested traversal is not supported",
+				CfgToolException::STATUS_NESTED_TRAVERSAL_DISALLOWED);
 		BFlags.TreeIsBeingTraversed = true;
 
 		// Search driver: call into recursive function and start the actual search, then handle errors,
@@ -374,8 +373,8 @@ public:
 			return TraversalStack.ReturnTargetValue;
 		case STATUS_NULLPOINTER_CALL:
 		case STATUS_ALREADY_EXPLORED:
-			throw CfgException("DFS cannot return null pointer call or already explored node, to the driver",
-				CfgException::STATUS_DFS_INVALID_SEARCH_CALL);
+			throw CfgToolException("DFS cannot return null pointer call or already explored node, to the driver",
+				CfgToolException::STATUS_DFS_INVALID_SEARCH_CALL);
 		default:
 			throw std::logic_error("DFS cannot return unsupported search result");
 		}
@@ -488,8 +487,7 @@ public:
 		UPDATE_RESET_COUNTER
 	};
 
-	virtual void operator()(                  // This function is called from the decompiler engine in a const context,
-		                                      // users should specify their members they wanna modify during calls as mutable.
+	virtual void operator()(                  // This function is called from the decompiler engine context, stacktraces can be taken
 		IN InformationUpdateType UpdateType,  // The specific counter or tracker entry the decompiler engine wants to modify
 		IN UpdateInformation     Operation    // How the caller wants to modify the counter, what it actually does is up to the implementor
 		) const {
@@ -510,11 +508,13 @@ export class CfgGenerator {
 		IN  ControlFlowGraph&          ControlFlowGraphContext; // Reference to the cfg used by the current engines stack   (passed down)
 		IN        byte_t*              NextCodeAddress;         // Virtual address for the next engine frame to disassemble (passed down)
 		IN  const FunctionAddress      PredictedFunctionBounds; // Constants of the function frame itself, start and size   (passed down)
-		OUT ControlFlowGraph::CfgNode* ReturnedFloatingTree;    // A pointer to a linked floating assembled tree fragment   (passed up)
-		                                                        // The caller receiving will have to hook this into its node
+		OUT ControlFlowGraph::CfgNode* ReturnedHingedTree;      // A pointer to a linked floating assembled tree fragment   (passed up)
+		IN  ControlFlowGraph::CfgNode* FloatingNodeOfPrevious;  // A pointer to the callers node of its frame of the cfg    (passed down)
+		                                                        // The callee has to link itself into the passed node
 
 		IN uint32_t BranchingFrameStack; // Number of times the a branch has been taken on the stack (passed down)
 		IN enum {
+			RECURSIVE_INITIAL_CALL = 0,  // The call is the start of the graph, no need to link pre-order
 			RECURSIVE_FALL_THROUGH,      // The invocation has passed the address of a fall through
 			RECURSIVE_BRANCH_TAKEN       // A branch was taken by the engine, BFS was incremented
 		} CallerBranchType;              // whether or not the caller invoked as is branched or not  (passed down)
@@ -536,11 +536,11 @@ public:
 			static_cast<void*>(ImageMapping.GetImageFileMapping()));
 	}
 
-	ControlFlowGraph GenerateControlFlowGraphFromFunction(                  // Tries to genearte a cfg using the underlying decompiler engine,
-		                                                                    // this function serves as a driver to start the decompiler,
-		                                                                    // which then is self reliant, additionally provides a default tracker
-		IN  const FunctionAddress&    PossibleFunction,                     // Presumed function bounds in which the engine should try to decompile
-		OPT const IDecompilerTracker& DataTrackerOpt = IDecompilerTracker() // A data tracker interface 
+	ControlFlowGraph GenerateControlFlowGraphFromFunction( // Tries to genearte a cfg using the underlying decompiler engine,
+		                                                   // this function serves as a driver to start the decompiler,
+		                                                   // which then is self reliant, additionally provides a default tracker
+		IN  const FunctionAddress&    PossibleFunction,    // Presumed function bounds in which the engine should try to decompile
+		OPT       IDecompilerTracker& ExternDataTracker    // A data tracker interface instance, this is used to trace and track
 	) {
 		TRACE_FUNCTION_PROTO;
 
@@ -552,13 +552,13 @@ public:
 		if (PossibleFunction.first < ImageMappingBegin ||
 			PossibleFunction.first +
 			PossibleFunction.second > ImageMappingEnd)
-			throw CfgException(
+			throw CfgToolException(
 				fmt::format("Passed function [{}:{}], exceeds or is not within the configured module [{}:{}]",
 					static_cast<void*>(PossibleFunction.first),
 					PossibleFunction.second,
 					static_cast<void*>(ImageMappingBegin),
 					ImageMappingEnd - ImageMappingBegin),
-				CfgException::STATUS_INDETERMINED_FUNCTION);
+				CfgToolException::STATUS_INDETERMINED_FUNCTION);
 		SPDLOG_DEBUG("Function to be analyzed at {}",
 			static_cast<void*>(PossibleFunction.first));
 
@@ -574,7 +574,7 @@ public:
 			.ControlFlowGraphContext = CurrentCfgContext,
 			.NextCodeAddress = PossibleFunction.first,
 			.PredictedFunctionBounds = PossibleFunction,
-			.DataTracker = DataTrackerOpt
+			.DataTracker = ExternDataTracker
 		};
 		auto Result = RecursiveDescentDisassembler(RecursiveDescentStack);
 		switch (Result) {
@@ -587,6 +587,15 @@ public:
 		}
 		
 		return CurrentCfgContext;
+	}
+	ControlFlowGraph GenerateControlFlowGraphFromFunction( // Tries to generate a cfg using the underlying decompiler engine,
+														   // this function serves as a driver to start the decompiler,
+														   // which then is self reliant, additionally provides a default tracker
+		IN const FunctionAddress& PossibleFunction         // Presumed function bounds in which the engine should try to decompile
+	) {
+		IDecompilerTracker ThrowAwayTrackerDummy{};
+		return GenerateControlFlowGraphFromFunction(PossibleFunction,
+			ThrowAwayTrackerDummy);
 	}
 
 
@@ -630,8 +639,8 @@ private:
 					// Overlaying code somehow, track and throw as exception
 					CfgTraversalStack.DataTracker(IDecompilerTracker::TRACKER_OVERLAYING_COUNT,
 						IDecompilerTracker::UPDATE_INCREMENT_COUNTER);
-					throw CfgException("An identical terminator address was matched but no matching overlay found",
-						CfgException::STATUS_OVERLAYING_CODE_DETECTED);
+					throw CfgToolException("An identical terminator address was matched but no matching overlay found",
+						CfgToolException::STATUS_OVERLAYING_CODE_DETECTED);
 				}
 
 				// Rebind nodes, first erase overlaying data then merge links
@@ -647,7 +656,6 @@ private:
 		
 		return false;
 	}
-
 
 	// Time for some design theory, the short version
 	// - recursive descent engine
@@ -676,11 +684,24 @@ private:
 	) {
 		TRACE_FUNCTION_PROTO;
 
+		// Preinitialize node and pre-order link node into passed down cfg endpoint
 		auto CfgNodeForCurrentFrame = CfgTraversalStack.ControlFlowGraphContext.AllocateFloatingCfgNode();
-		auto VirtualInstructionPointer = CfgTraversalStack.NextCodeAddress;
+		switch (CfgTraversalStack.CallerBranchType) {
+		case DisasseblerEngineState::RECURSIVE_FALL_THROUGH:
+			CfgTraversalStack.FloatingNodeOfPrevious->NonBranchingLeftNode = CfgNodeForCurrentFrame;
+			CfgTraversalStack.FloatingNodeOfPrevious->LinkNodeIntoRemoteNodeInputList(*CfgNodeForCurrentFrame);
+			break;
 
-		xed_error_enum_t IntelXedResult{};
+		case DisasseblerEngineState::RECURSIVE_BRANCH_TAKEN:
+			CfgTraversalStack.FloatingNodeOfPrevious->BranchingOutRightNode.push_back(CfgNodeForCurrentFrame);
+			CfgTraversalStack.FloatingNodeOfPrevious->LinkNodeIntoRemoteNodeInputList(*CfgNodeForCurrentFrame);
+			break;
+		}
+
+		// Initialize decoder loop and begin recursive descent
+		auto VirtualInstructionPointer = CfgTraversalStack.NextCodeAddress;
 		for (;;) {
+
 			// Allocate instruction entry for current cfg node frame
 			CfgTraversalStack.DataTracker(IDecompilerTracker::TRACKER_CFGNODE_COUNT,
 				IDecompilerTracker::UPDATE_INCREMENT_COUNTER);
@@ -690,29 +711,19 @@ private:
 			CfgNodeEntry.OriginalAddress = VirtualInstructionPointer;
 
 			// Decode current selected opcode with maximum size
-			IntelXedResult = xed_decode(&CfgNodeEntry.DecodedInstruction,
+			auto MaxDecodeLength = std::min<size_t>(15,
+				static_cast<size_t>((CfgTraversalStack.PredictedFunctionBounds.first +
+					CfgTraversalStack.PredictedFunctionBounds.second) -
+					VirtualInstructionPointer));
+			auto IntelXedResult = xed_decode(&CfgNodeEntry.DecodedInstruction,
 				VirtualInstructionPointer,
-				static_cast<uintptr_t>(CfgTraversalStack.PredictedFunctionBounds.first +
-					CfgTraversalStack.PredictedFunctionBounds.second -
-					VirtualInstructionPointer) & 15);
+				MaxDecodeLength);
 
 			#define CFGEXCEPTION_FOR_XED_ERROR(ErrorType, StatusCode, ExceptionText, ...)\
 			case (ErrorType):\
-				throw CfgException(\
-					fmt::format((ExceptionText), __VA_ARGS__),\
+				throw CfgToolException(\
+					fmt::format(ExceptionText, __VA_ARGS__),\
 					(StatusCode))
-			static const char* XedBadDecode[]{
-				"XED_ERROR_GENERAL_ERROR",
-				"XED_ERROR_INVALID_FOR_CHIP",
-				"XED_ERROR_BAD_REGISTER",
-				"XED_ERROR_BAD_LOCK_PREFIX",
-				"XED_ERROR_BAD_REP_PREFIX",
-				"XED_ERROR_BAD_LEGACY_PREFIX",
-				"XED_ERROR_BAD_REX_PREFIX",
-				"XED_ERROR_BAD_EVEX_UBIT",
-				"XED_ERROR_BAD_MAP",
-				"XED_ERROR_BAD_EVEX_V_PRIME",
-				"XED_ERROR_BAD_EVEX_Z_NO_MASKING" };
 			static const char* XedTextError[]{
 				"A memory operand index was not 0 or 1 during decode",
 				nullptr,
@@ -731,19 +742,20 @@ private:
 				CfgTraversalStack.DataTracker(IDecompilerTracker::TRACKER_INSTRUCTION_COUNT,
 					IDecompilerTracker::UPDATE_INCREMENT_COUNTER);
 				auto InstructionLength = xed_decoded_inst_get_length(&CfgNodeEntry.DecodedInstruction);
+
 				memcpy(&CfgNodeEntry.InstructionText,
 					VirtualInstructionPointer,
 					InstructionLength);
-				memset(&CfgNodeEntry.InstructionText + InstructionLength,
+				memset(CfgNodeEntry.InstructionText + InstructionLength,
 					0,
 					15 - InstructionLength);
 
 				// TODO: use formatter here instead of the iclass bullshit value i would have to look up
 				{
-					auto XedInstrctionClass = xed_decoded_inst_get_iclass(&CfgNodeEntry.DecodedInstruction);
-					SPDLOG_DEBUG("Decoded instruction at rip={} to iclass={}",
+					auto XedInstrctionClass = xed_decoded_inst_get_iform_enum(&CfgNodeEntry.DecodedInstruction);
+					SPDLOG_DEBUG("Decoded instruction at rip={} to iform={}",
 						static_cast<void*>(VirtualInstructionPointer),
-						XedInstrctionClass);
+						xed_iform_enum_t2str(XedInstrctionClass));
 				}
 
 				// Determine the type of instruction and with that if we have to specifically treat it
@@ -759,9 +771,10 @@ private:
 					// This piece will reoccur in multiple locations of this handler...
 					auto Rebound = CheckFallthroughIntoNodeStripExistingAndRebind(CfgTraversalStack,
 						*CfgNodeForCurrentFrame);
-	
+					SPDLOG_INFO("decoded return instruction");
+
 					// Possibly terminate the node and return constructed tree after check
-					CfgTraversalStack.ReturnedFloatingTree = CfgNodeForCurrentFrame;
+					CfgTraversalStack.ReturnedHingedTree = CfgNodeForCurrentFrame;
 					if (!Rebound)
 						CfgNodeForCurrentFrame->TerminateThisNodeAsCfgExit();
 					return STATUS_RECURSIVE_OK;										
@@ -774,9 +787,10 @@ private:
 					// Same as in XED_CATEGORY_RET case...
 					auto Rebound = CheckFallthroughIntoNodeStripExistingAndRebind(CfgTraversalStack,
 						*CfgNodeForCurrentFrame);
-					CfgTraversalStack.ReturnedFloatingTree = CfgNodeForCurrentFrame;
+					CfgTraversalStack.ReturnedHingedTree = CfgNodeForCurrentFrame;
 					if (Rebound)
 						return STATUS_RECURSIVE_OK;
+					SPDLOG_INFO("Docoded branchign instruction");
 
 					// Check if this is a branching or conditionally branching instruction
 					if (InstructionCategory == XED_CATEGORY_COND_BR) {
@@ -787,16 +801,13 @@ private:
 
 						// Calculate fall through address then dispatch new disassembly frame
 						CfgTraversalStack.NextCodeAddress = VirtualInstructionPointer + InstructionLength;
+						CfgTraversalStack.FloatingNodeOfPrevious = CfgNodeForCurrentFrame;
 						CfgTraversalStack.CallerBranchType = DisasseblerEngineState::RECURSIVE_FALL_THROUGH;
 						auto SubTreeResult = RecursiveDescentDisassembler(CfgTraversalStack);
 						switch (SubTreeResult) {
 						default:
 							break;
 						}
-
-						// Now link the new found node into the current tree and proceed with the rigth node
-						CfgNodeForCurrentFrame->LinkNodeIntoRemoteNodeInputList(*CfgTraversalStack.ReturnedFloatingTree);
-						CfgNodeForCurrentFrame->BranchingOutRightNode.push_back(CfgTraversalStack.ReturnedFloatingTree);
 					}
 
 					// TODO: heuristics for "emulated call", "trailing function call" / "jump outside",
@@ -818,8 +829,8 @@ private:
 							IN ControlFlowGraph::CfgNode* TraversalNode
 							) -> bool {
 								TRACE_FUNCTION_PROTO;
-								if (TraversalNode->GetPhysicalNodeStartAddress() >= VirtualBranchLocation &&
-									TraversalNode->GetPhysicalNodeEndAddress() < VirtualBranchLocation)
+								if (TraversalNode->GetPhysicalNodeStartAddress() <= VirtualBranchLocation &&
+									TraversalNode->GetPhysicalNodeEndAddress() > VirtualBranchLocation)
 									return true;
 								return false;
 						});
@@ -857,13 +868,14 @@ private:
 						// Execution continues here if overlaying assembly was found
 						CfgTraversalStack.DataTracker(IDecompilerTracker::TRACKER_OVERLAYING_COUNT,
 							IDecompilerTracker::UPDATE_INCREMENT_COUNTER);
-						throw CfgException("Overlaying assembly was found, not yet supported, fatal",
-							CfgException::STATUS_OVERLAYING_CODE_DETECTED);
+						throw CfgToolException("Overlaying assembly was found, not yet supported, fatal",
+							CfgToolException::STATUS_OVERLAYING_CODE_DETECTED);
 					}
 
 					// No node was found, the address we received is unknown, we can now reinvoke us and discover it
 					CfgTraversalStack.NextCodeAddress = VirtualBranchLocation;
 					++CfgTraversalStack.BranchingFrameStack;
+					CfgTraversalStack.FloatingNodeOfPrevious = CfgNodeForCurrentFrame;
 					CfgTraversalStack.CallerBranchType = DisasseblerEngineState::RECURSIVE_BRANCH_TAKEN;
 					auto SubTreeResult = RecursiveDescentDisassembler(CfgTraversalStack);
 					--CfgTraversalStack.BranchingFrameStack;
@@ -877,10 +889,53 @@ private:
 					}
 
 					// Now link the new found node into the current tree and return that tree
-					CfgNodeForCurrentFrame->LinkNodeIntoRemoteNodeInputList(*CfgTraversalStack.ReturnedFloatingTree);
-					CfgNodeForCurrentFrame->BranchingOutRightNode.push_back(CfgTraversalStack.ReturnedFloatingTree);
-					CfgTraversalStack.ReturnedFloatingTree = CfgNodeForCurrentFrame;
+					CfgTraversalStack.ReturnedHingedTree = CfgNodeForCurrentFrame;
 					return STATUS_RECURSIVE_OK;
+				}
+				
+				case XED_CATEGORY_INTERRUPT: {
+
+					// Detect possible function exit points
+					
+
+
+					// Get Operand iform to detect special interrupt types
+					auto InterruptIform = xed_decoded_inst_get_iform_enum(&CfgNodeEntry.DecodedInstruction);
+					if (InterruptIform != XED_IFORM_INT_IMMb)
+						break;
+
+					// interrupt has imm, locate imm and get value
+					auto XedOperands = xed_decoded_inst_operands_const(&CfgNodeEntry.DecodedInstruction);
+					auto Immediate0 = xed_operand_values_get_immediate_uint64(XedOperands);
+
+					// Handle specific immediate
+					switch (Immediate0) {
+					case 0x29: {
+
+						// RtlFastFail interrupt, treat as function exit
+
+						// The __fastfail interrupt will terminate the node and mark it as a cfg exit point
+						// therefore we also have to check possible fallthrough cases via stub
+						auto Rebound = CheckFallthroughIntoNodeStripExistingAndRebind(CfgTraversalStack,
+							*CfgNodeForCurrentFrame);
+						
+						// Possibly terminate the node and return constructed tree after check
+						CfgTraversalStack.ReturnedHingedTree = CfgNodeForCurrentFrame;
+						if (!Rebound)
+							CfgNodeForCurrentFrame->TerminateThisNodeAsCfgExit();
+		
+						// Track and log, then return
+						CfgTraversalStack.DataTracker(IDecompilerTracker::TRACKER_HEURISTICS_TRIGGER,
+							IDecompilerTracker::UPDATE_INCREMENT_COUNTER);
+						SPDLOG_WARN("Located __fastfail interrupt 29h, treating as function exit");
+						return STATUS_RECURSIVE_OK;
+					}
+
+					default:
+						break;
+					}
+
+					break;
 				}}
 
 				// No special instruction decoded, continue decoding node linearly
@@ -889,7 +944,7 @@ private:
 #pragma endregion
 			
 			CFGEXCEPTION_FOR_XED_ERROR(XED_ERROR_BUFFER_TOO_SHORT,
-				CfgException::STATUS_CODE_LEAVING_FUNCTION,
+				CfgToolException::STATUS_CODE_LEAVING_FUNCTION,
 				"Intel xed could not read full instruction at {}, possibly invalid function [{}:{}]",
 				static_cast<void*>(VirtualInstructionPointer),
 				static_cast<void*>(CfgTraversalStack.PredictedFunctionBounds.first),
@@ -910,17 +965,17 @@ private:
 					IDecompilerTracker::UPDATE_INCREMENT_COUNTER);
 				CfgNodeForCurrentFrame->SetNodeIsIncomplete();
 				SPDLOG_WARN("A bad decode of type {} was raised by xed, state could be invalid",
-					XedBadDecode[IntelXedResult - XED_ERROR_GENERAL_ERROR]);
-				break;
+					xed_error_enum_t2str(IntelXedResult));
+				return STATUS_POTENTIALLY_BAD_DECODE;
 
 			CFGEXCEPTION_FOR_XED_ERROR(XED_ERROR_NO_OUTPUT_POINTER,
-				CfgException::STATUS_XED_NO_MEMORY_BAD_POINTER,
+				CfgToolException::STATUS_XED_NO_MEMORY_BAD_POINTER,
 				"The output parameter to the decoded instruction type for xed was null");
 			CFGEXCEPTION_FOR_XED_ERROR(XED_ERROR_NO_AGEN_CALL_BACK_REGISTERED,
-				CfgException::STATUS_XED_BAD_CALLBACKS_OR_MISSING,
+				CfgToolException::STATUS_XED_BAD_CALLBACKS_OR_MISSING,
 				"One of both of xeds AGEN callbacks were missing during decode");
 			CFGEXCEPTION_FOR_XED_ERROR(XED_ERROR_CALLBACK_PROBLEM,
-				CfgException::STATUS_XED_BAD_CALLBACKS_OR_MISSING,
+				CfgToolException::STATUS_XED_BAD_CALLBACKS_OR_MISSING,
 				"Xeds AGEN register or segment callback issued an error during decode");
 
 			case XED_ERROR_BAD_MEMOP_INDEX:
@@ -933,18 +988,20 @@ private:
 					IDecompilerTracker::UPDATE_INCREMENT_COUNTER);
 				CfgNodeForCurrentFrame->SetNodeIsIncomplete();
 				SPDLOG_WARN(XedTextError[IntelXedResult - XED_ERROR_BAD_MEMOP_INDEX]);
-				break;
+				return STATUS_POTENTIALLY_BAD_DECODE;
 			
 			default:
-				throw CfgException(
+				throw CfgToolException(
 					fmt::format("Singularity's intelxed error handler encountered an unsupported xed error type {}",
 						IntelXedResult),
-					CfgException::STATUS_XED_UNSUPPORTED_ERROR);				
+					CfgToolException::STATUS_XED_UNSUPPORTED_ERROR);				
 			}
 			#undef CFGEXCEPTION_FOR_XED_ERROR
+
+			// move the disassembly iterator
+			VirtualInstructionPointer += xed_decoded_inst_get_length(&CfgNodeEntry.DecodedInstruction);
 		}
 	}
-
 
 	const ImageHelp&  ImageMapping;
 	const xed_state_t IntelXedState;

@@ -46,13 +46,13 @@
 	#define NODRAWTEXT        // DrawText() and DT_*
 	#define NOGDI             // All GDI defines and routines
 //	#define NOKERNEL          // All KERNEL defines and routines
-	#define NOUSER            // All USER defines and routines
+// 	#define NOUSER            // All USER defines and routines
 	#define NONLS             // All NLS defines and routines
 	#define NOMB              // MB_* and MessageBox()
 	#define NOMEMMGR          // GMEM_*, LMEM_*, GHND, LHND, associated routines
 	#define NOMETAFILE        // typedef METAFILEPICT
 	#define NOMINMAX          // Macros min(a,b) and max(a,b)
-	#define NOMSG             // typedef MSG and associated routines
+// 	#define NOMSG             // typedef MSG and associated routines
 	#define NOOPENFILE        // OpenFile(), OemToAnsi, AnsiToOem, and OF_*
 	#define NOSCROLL          // SB_* and scrolling routines
 	#define NOSERVICE         // All Service Controller routines, SERVICE_ equates, etc.
@@ -60,7 +60,7 @@
 	#define NOTEXTMETRIC      // typedef TEXTMETRIC and associated routines
 	#define NOWH              // SetWindowsHook and WH_*
 	#define NOWINOFFSETS      // GWL_*, GCL_*, associated routines
-	#define NOCOMM            // COMM driver routines
+ 	#define NOCOMM            // COMM driver routines
 	#define NOKANJI           // Kanji support stuff.
 	#define NOHELP            // Help engine interface.
 	#define NOPROFILER        // Profiler interface.
@@ -188,3 +188,29 @@ public:
 
 
 #pragma endregion
+
+class CommonExceptionType {
+public:
+	using UnderlyingType = int32_t;
+
+	enum ExceptionTypeTag {
+		EXCPETION_UNSPECIFIED = 0,
+		EXCEPTION_IMAGE_HELP,
+		EXCEPTION_CFG_TOOLSET,
+	};
+
+	CommonExceptionType(
+		IN const std::string_view& ExceptionText,
+		IN       UnderlyingType    Exception,
+		IN       ExceptionTypeTag  ExceptionTag
+	)
+		: ExceptionText(ExceptionText),
+		  StatusCode(Exception),
+		  ExceptionTag(ExceptionTag) {
+		TRACE_FUNCTION_PROTO;
+	}
+
+	const std::string      ExceptionText;
+	const UnderlyingType   StatusCode;
+	const ExceptionTypeTag ExceptionTag;
+};

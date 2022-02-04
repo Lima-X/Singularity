@@ -103,18 +103,37 @@ export int32_t main(
 		for (const RUNTIME_FUNCTION& RuntimeFunction : RuntimeFunctionsView) {
 
 			// Generate Cfg from function
-			auto GraphForRuntimeFunction = ControlFlowGraphGenerator.GenerateControlFlowGraphFromFunction(
-				FunctionAddress(
-					RuntimeFunction.BeginAddress + TargetImage.GetImageFileMapping(),
-					RuntimeFunction.EndAddress - RuntimeFunction.BeginAddress));
+			
+			try {
+
+				auto GraphForRuntimeFunction = ControlFlowGraphGenerator.GenerateControlFlowGraphFromFunction(
+					FunctionAddress(
+						RuntimeFunction.BeginAddress + TargetImage.GetImageFileMapping(),
+						RuntimeFunction.EndAddress - RuntimeFunction.BeginAddress));
+				auto Failures = GraphForRuntimeFunction.ValidateCfgOverCrossReferences();
+				if (Failures) {
+
+					__debugbreak();
+
+				}
+			}
+			catch (const CfgToolException& GraphException) {
+				
+				SPDLOG_ERROR("Graph generation failed failed with [{}] : \"{}\", skipping frame",
+					GraphException.StatusCode,
+					GraphException.ExceptionText);
+
+				// if (IsDebuggerPresent())
+					__debugbreak();
+			}
+
 
 		}
 
-		TargetImage.ReconstructOptionalAndUnmapImage();
 
 
-
-
+		// Discard changes for now
+		TargetImage.ReconstructOptionalAndUnmapImage(true);
 	}
 	catch (const ImageHelpException& MapperException) {
 
@@ -122,13 +141,6 @@ export int32_t main(
 			MapperException.StatusCode,
 			MapperException.ExceptionText);
 		return STATUS_FAILED_IMAGEHELP;
-	}
-	catch (const CfgException& GraphException) {
-
-		SPDLOG_ERROR("A CFG tool failed with [{}] : \"{}\"",
-			GraphException.StatusCode,
-			GraphException.ExceptionText);
-		return STATUS_FAILED_CFGTOOLS;
 	}
 	catch (const std::exception& ExceptionInformation) {
 

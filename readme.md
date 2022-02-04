@@ -21,3 +21,11 @@ git clone --recurse-submodules https://github.com/Lima-X/Singularity
 vcvars64
 msbuild .Singularity\Singularity.sln -p:Configuration=Release
 ```
+
+## Decompiler heuristics support list
+
+- [x] `int 29h` : (RtlFailFast Exception), interpret as function exit point
+- [ ] `jmp [r/]` : runtime dependent jump used for jumptables
+      This requires multiple heuristics to find and locate the upper and lower bounds of a jumptable
+- [ ] `jmp remote` : tail function call, interpret as exit point
+- [ ] `push ?; ret` : emulated call, interpret as call instead of ret (HIGH RISK FACTOR)

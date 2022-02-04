@@ -14,9 +14,10 @@ export module ImageHelp;
 
 // ImageHelp module exception report model implementation,
 // all tools of this toolset throw this type when they encounter a fatal issue
-export class ImageHelpException {
+export class ImageHelpException 
+	: public CommonExceptionType {
 public:
-	enum ExceptionCode {
+	enum ExceptionCode : UnderlyingType {
 		STATUS_FAILED_TO_OPEN_FILE = -2000,
 		STATUS_FAILED_TO_CLOSE_FILE,
 		STATUS_FAILED_FILE_POINTER,
@@ -36,13 +37,11 @@ public:
 		IN const std::string_view& ExceptionText,
 		IN       ExceptionCode     StatusCode
 	)
-		: ExceptionText(ExceptionText),
-		  StatusCode(StatusCode) {
+		: CommonExceptionType(ExceptionText,
+			StatusCode,
+			CommonExceptionType::EXCEPTION_IMAGE_HELP) {
 		TRACE_FUNCTION_PROTO;
 	}
-
-	const std::string_view ExceptionText;
-	const ExceptionCode    StatusCode;
 };
 
 
@@ -56,8 +55,8 @@ public:
 		RelocationBlockIterator& operator++() {
 			TRACE_FUNCTION_PROTO;
 			CurrentPosition = reinterpret_cast<IMAGE_BASE_RELOCATION*>(
-				CurrentPosition->VirtualAddress + CurrentPosition->SizeOfBlock
-				+ ImageBaseAddress);
+				reinterpret_cast<byte_t*>(CurrentPosition) +
+				CurrentPosition->SizeOfBlock);
 			return *this;
 		}
 
@@ -421,7 +420,8 @@ public:
 			// Walk the per block based, base relocation view and apply
 			std::span<IMAGE_RELOCATION_ENTRY> BaseRelcoationView(
 				reinterpret_cast<IMAGE_RELOCATION_ENTRY*>(&RelocationBlock + 1),
-				RelocationBlock.SizeOfBlock / sizeof(IMAGE_RELOCATION_ENTRY));
+				(RelocationBlock.SizeOfBlock - sizeof(IMAGE_BASE_RELOCATION)) /
+					sizeof(IMAGE_RELOCATION_ENTRY));
 			for (auto& BaseRelocation : BaseRelcoationView) {
 
 				// Calculate location of base relocation and treat relocation type
@@ -432,7 +432,7 @@ public:
 					continue;
 				case IMAGE_REL_BASED_DIR64:
 					*reinterpret_cast<uintptr_t*>(BaseRelocationAddress) += RelocationDelta;
-					SPDLOG_DEBUG("Applies base relocation at address {}",
+					SPDLOG_DEBUG("Applied base relocation at address {}",
 						BaseRelocationAddress);
 					break;
 
