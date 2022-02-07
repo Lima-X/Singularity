@@ -27,9 +27,9 @@
 
 // Disable specific API sets to reduce header size
 #pragma region Import and configure windows.h
-	#define NOGDICAPMASKS     // CC_*, LC_*, PC_*, CP_*, TC_*, RC_
+//	#define NOGDICAPMASKS     // CC_*, LC_*, PC_*, CP_*, TC_*, RC_
 	#define NOVIRTUALKEYCODES // VK_*
-	#define NOWINMESSAGES     // WM_*, EM_*, LB_*, CB_*
+//	#define NOWINMESSAGES     // WM_*, EM_*, LB_*, CB_*
 	#define NOWINSTYLES       // WS_*, CS_*, ES_*, LBS_*, SBS_*, CBS_*
 	#define NOSYSMETRICS      // SM_*
 	#define NOMENUS           // MF_*
@@ -37,7 +37,7 @@
 	#define NOKEYSTATES       // MK_*
 	#define NOSYSCOMMANDS     // SC_*
 	#define NORASTEROPS       // Binary and Tertiary raster ops
-	#define NOSHOWWINDOW      // SW_*
+//	#define NOSHOWWINDOW      // SW_*
 	#define OEMRESOURCE       // OEM Resource values
 	#define NOATOM            // Atom Manager routines
 	#define NOCLIPBOARD       // Clipboard routines
@@ -47,7 +47,7 @@
 	#define NOGDI             // All GDI defines and routines
 //	#define NOKERNEL          // All KERNEL defines and routines
 // 	#define NOUSER            // All USER defines and routines
-	#define NONLS             // All NLS defines and routines
+//	#define NONLS             // All NLS defines and routines
 	#define NOMB              // MB_* and MessageBox()
 	#define NOMEMMGR          // GMEM_*, LMEM_*, GHND, LHND, associated routines
 	#define NOMETAFILE        // typedef METAFILEPICT
@@ -60,7 +60,7 @@
 	#define NOTEXTMETRIC      // typedef TEXTMETRIC and associated routines
 	#define NOWH              // SetWindowsHook and WH_*
 	#define NOWINOFFSETS      // GWL_*, GCL_*, associated routines
- 	#define NOCOMM            // COMM driver routines
+	#define NOCOMM            // COMM driver routines
 	#define NOKANJI           // Kanji support stuff.
 	#define NOHELP            // Help engine interface.
 	#define NOPROFILER        // Profiler interface.
@@ -77,12 +77,13 @@
 #pragma endregion
 // #include <winternl.h>
 // #include <ntstatus.h>
-
+#include <atlbase.h>
 
 // Configure base includes for shared base and libc
 #define _CRT_SECURE_NO_WARNINGS
 #include <utility>
 #include <memory>
+#include <string>
 #include <intrin.h>
 
 
@@ -113,10 +114,12 @@ extern "C" {
 #define PAGE_ALLOCATION_GRANULARITY 65536
 
 // Project specific types with special meaning
-using offset_t = ptrdiff_t; // Type used to store an offset with a maximum capacity of the architectures size
-using byte_t = uint8_t;     // Type used to store arbitrary data in the form of a byte with 8 bits
-using rva_t = int32_t;      // Type used to describe a 31bit image relative offset, anything negative is invalid
-
+using ulong_t = unsigned long;
+using long_t = signed long;
+using offset_t = ptrdiff_t;            // Type used to store an offset with a maximum capacity of the architectures size
+using byte_t = uint8_t;                // Type used to store arbitrary data in the form of a byte with 8 bits
+using rva_t = long_t;                  // Type used to describe a 31bit image relative offset, anything negative is invalid
+using disp_t = long_t;                 // Type used to represent a 32bit displacement
 
 #pragma region Active template library components
 #pragma region Smart pointer abstractions for VirtualAlloc
@@ -197,6 +200,7 @@ public:
 		EXCPETION_UNSPECIFIED = 0,
 		EXCEPTION_IMAGE_HELP,
 		EXCEPTION_CFG_TOOLSET,
+		EXCEPTION_COMOLE_EXP,
 	};
 
 	CommonExceptionType(
@@ -214,3 +218,53 @@ public:
 	const UnderlyingType   StatusCode;
 	const ExceptionTypeTag ExceptionTag;
 };
+
+#pragma region Unicode and partial-utf8/ansi conversions
+using UnicodeString = std::wstring;
+using UnicodeView = std::wstring_view;
+
+// Beyond ugly, partially utf8 aware, ansi to and from unicode converters
+inline UnicodeString ConvertAnsiToUnicode(
+	IN const std::string_view& AnsiToUnicodeString
+) {
+	TRACE_FUNCTION_PROTO;
+
+	auto RequiredBufferSize = MultiByteToWideChar(CP_UTF8, 0,
+		AnsiToUnicodeString.data(),
+		static_cast<int32_t>(AnsiToUnicodeString.size()),
+		nullptr, 0);
+	if (!RequiredBufferSize)
+		throw std::runtime_error("Could not calculate required string length");
+	UnicodeString ResultString;
+	ResultString.resize(RequiredBufferSize);
+	RequiredBufferSize = MultiByteToWideChar(CP_UTF8, 0,
+		AnsiToUnicodeString.data(),
+		static_cast<int32_t>(AnsiToUnicodeString.size()),
+		ResultString.data(),
+		static_cast<int32_t>(ResultString.capacity()));
+	return ResultString;
+}
+inline std::string ConvertUnicodeToAnsi(
+	IN const UnicodeView& UnicodeToAnsiString
+) {
+	TRACE_FUNCTION_PROTO;
+
+	auto RequiredBufferSize = WideCharToMultiByte(CP_UTF8, 0,
+		UnicodeToAnsiString.data(),
+		static_cast<int32_t>(UnicodeToAnsiString.size()),
+		nullptr, 0,
+		nullptr, nullptr);
+	if (!RequiredBufferSize)
+		throw std::runtime_error("Could not calculate required string length");
+
+	std::string ResultString;
+	ResultString.resize(RequiredBufferSize);
+	RequiredBufferSize = WideCharToMultiByte(CP_UTF8, 0,
+		UnicodeToAnsiString.data(),
+		static_cast<int32_t>(UnicodeToAnsiString.size()),
+		ResultString.data(),
+		static_cast<int32_t>(ResultString.capacity()),
+		nullptr, nullptr);
+	return ResultString;
+}
+#pragma endregion

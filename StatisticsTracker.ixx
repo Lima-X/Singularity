@@ -7,7 +7,7 @@ module;
 #include <algorithm>
 
 export module StatisticsTracker;
-import DecompilerEngine;
+import DisassemblerEngine;
 
 using namespace std::chrono_literals;
 namespace chrono = std::chrono;
@@ -16,9 +16,9 @@ namespace chrono = std::chrono;
 export class TextProgressBar {
 public:
 	TextProgressBar(
-		OPT            size_t       DesiredProgressBarWidth = 50,
-		OPT    chrono::milliseconds IntervalBetweenRotation = 400ms,
-		OPT const std::string_view& UpdateIndicator = "|\0/\0-\0\\\0Done...\0"
+		OPT       size_t               DesiredProgressBarWidth = 50,
+		OPT       chrono::milliseconds IntervalBetweenRotation = 400ms,
+		OPT const std::string_view&    UpdateIndicator = "|\0/\0-\0\\\0Done...\0"
 	)
 		: ProgressBarWidth(DesiredProgressBarWidth),
 		IntervalBetweenRotation(IntervalBetweenRotation),
@@ -66,7 +66,7 @@ public:
 	}
 
 	// constant progress format configuration
-	const std::string_view UpdateIndicator;
+	const std::string          UpdateIndicator;
 	const chrono::milliseconds IntervalBetweenRotation;
 
 private:
@@ -112,7 +112,7 @@ private:
 
 
 export class StatisticsTracker 
-	: public IDecompilerTracker {
+	: public IDisassemblerTracker {
 public:
 	using IntergerCountRatio = std::pair<uint32_t, uint32_t>;
 
@@ -125,25 +125,25 @@ public:
 	}
 
 	void operator()(
-		IN IDecompilerTracker::InformationUpdateType InformationType,
-		IN IDecompilerTracker::UpdateInformation     UpdateType
+		IN IDisassemblerTracker::InformationUpdateType InformationType,
+		IN IDisassemblerTracker::UpdateInformation     UpdateType
 		) const override {
 		TRACE_FUNCTION_PROTO;
 
 		switch (InformationType) {
-		case IDecompilerTracker::TRACKER_CFGNODE_COUNT:
+		case IDisassemblerTracker::TRACKER_CFGNODE_COUNT:
 			++NumberOfNodesAnalyzed; break;
-		case IDecompilerTracker::TRACKER_OVERLAYING_COUNT:
+		case IDisassemblerTracker::TRACKER_OVERLAYING_COUNT:
 			++NumberOfOverlayDefects; break;
-		case IDecompilerTracker::TRACKER_INSTRUCTION_COUNT:
+		case IDisassemblerTracker::TRACKER_INSTRUCTION_COUNT:
 			++NumberOfInstructions; break;
-		case IDecompilerTracker::TRACKER_DECODE_ERRORS:
+		case IDisassemblerTracker::TRACKER_DECODE_ERRORS:
 			++NumberOfDecodeErrors; break;
-		case IDecompilerTracker::TRACKER_HEURISTICS_TRIGGER:
+		case IDisassemblerTracker::TRACKER_HEURISTICS_TRIGGER:
 			++NoHeuristicsTriggered; break;
-		case IDecompilerTracker::TRACKER_SPLICED_NODES:
+		case IDisassemblerTracker::TRACKER_SPLICED_NODES:
 			++NumberOfSlicedNodes; break;
-		case IDecompilerTracker::TRACKER_STRIPPED_NODES:
+		case IDisassemblerTracker::TRACKER_STRIPPED_NODES:
 			++NumberOfStrippedNodes; break;
 		}
 	}

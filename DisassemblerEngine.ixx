@@ -1,5 +1,5 @@
 // This file describes and implements the base intermediate representation
-// and the decompiler engine used for translation of x64 code to the IR
+// and the "decompiler" engine used for translation of x64 code to the IR
 //
 module;
 
@@ -9,7 +9,7 @@ module;
 #include <span>
 #include <algorithm>
 
-export module DecompilerEngine;
+export module DisassemblerEngine;
 export import ImageHelp;
 
 // Implements the cfg exception model used to report exceptions from this module
@@ -174,6 +174,11 @@ public:
 			this->erase(this->begin(),
 				SpliceIterator + 1);
 			SplicedNodeHead->NonBranchingLeftNode = this;
+
+			// Security checks, verify nodes contain data
+			if (SplicedNodeHead->empty() || this->empty())
+				throw std::logic_error("splicing cannot result in empty nodes");
+
 			return true;
 		}
 
@@ -469,7 +474,7 @@ private:
 
 
 // Statistics and issue tracker interface, overload operator() to implement your own captcha
-export class IDecompilerTracker {
+export class IDisassemblerTracker {
 public:
 	enum InformationUpdateType {
 		TRACKER_CFGNODE_COUNT,
@@ -487,8 +492,8 @@ public:
 		UPDATE_RESET_COUNTER
 	};
 
-	virtual void operator()(                  // This function is called from the decompiler engine context, stacktraces can be taken
-		IN InformationUpdateType UpdateType,  // The specific counter or tracker entry the decompiler engine wants to modify
+	virtual void operator()(                  // This function is called from the disassembler engine context, stacktraces can be taken
+		IN InformationUpdateType UpdateType,  // The specific counter or tracker entry the disassembler engine wants to modify
 		IN UpdateInformation     Operation    // How the caller wants to modify the counter, what it actually does is up to the implementor
 		) const {
 		TRACE_FUNCTION_PROTO;
@@ -519,7 +524,7 @@ export class CfgGenerator {
 			RECURSIVE_BRANCH_TAKEN       // A branch was taken by the engine, BFS was incremented
 		} CallerBranchType;              // whether or not the caller invoked as is branched or not  (passed down)
 
-		IN const IDecompilerTracker& DataTracker;
+		IN const IDisassemblerTracker& DataTracker;
 	};
 
 public:
@@ -536,11 +541,11 @@ public:
 			static_cast<void*>(ImageMapping.GetImageFileMapping()));
 	}
 
-	ControlFlowGraph GenerateControlFlowGraphFromFunction( // Tries to genearte a cfg using the underlying decompiler engine,
-		                                                   // this function serves as a driver to start the decompiler,
+	ControlFlowGraph GenerateControlFlowGraphFromFunction( // Tries to generate a cfg using the underlying disassembler engine,
+		                                                   // this function serves as a driver to start the disassembler,
 		                                                   // which then is self reliant, additionally provides a default tracker
 		IN  const FunctionAddress&    PossibleFunction,    // Presumed function bounds in which the engine should try to decompile
-		OPT       IDecompilerTracker& ExternDataTracker    // A data tracker interface instance, this is used to trace and track
+		OPT       IDisassemblerTracker& ExternDataTracker    // A data tracker interface instance, this is used to trace and track
 	) {
 		TRACE_FUNCTION_PROTO;
 
@@ -588,12 +593,12 @@ public:
 		
 		return CurrentCfgContext;
 	}
-	ControlFlowGraph GenerateControlFlowGraphFromFunction( // Tries to generate a cfg using the underlying decompiler engine,
-														   // this function serves as a driver to start the decompiler,
+	ControlFlowGraph GenerateControlFlowGraphFromFunction( // Tries to generate a cfg using the underlying disassembler engine,
+														   // this function serves as a driver to start the disassembler,
 														   // which then is self reliant, additionally provides a default tracker
 		IN const FunctionAddress& PossibleFunction         // Presumed function bounds in which the engine should try to decompile
 	) {
-		IDecompilerTracker ThrowAwayTrackerDummy{};
+		IDisassemblerTracker ThrowAwayTrackerDummy{};
 		return GenerateControlFlowGraphFromFunction(PossibleFunction,
 			ThrowAwayTrackerDummy);
 	}
@@ -637,19 +642,24 @@ private:
 				if (TouchIterator == CfgNodeForCurrentFrame.end()) {
 
 					// Overlaying code somehow, track and throw as exception
-					CfgTraversalStack.DataTracker(IDecompilerTracker::TRACKER_OVERLAYING_COUNT,
-						IDecompilerTracker::UPDATE_INCREMENT_COUNTER);
+					CfgTraversalStack.DataTracker(IDisassemblerTracker::TRACKER_OVERLAYING_COUNT,
+						IDisassemblerTracker::UPDATE_INCREMENT_COUNTER);
 					throw CfgToolException("An identical terminator address was matched but no matching overlay found",
 						CfgToolException::STATUS_OVERLAYING_CODE_DETECTED);
 				}
 
 				// Rebind nodes, first erase overlaying data then merge links
-				CfgTraversalStack.DataTracker(IDecompilerTracker::TRACKER_STRIPPED_NODES,
-					IDecompilerTracker::UPDATE_INCREMENT_COUNTER);
+				CfgTraversalStack.DataTracker(IDisassemblerTracker::TRACKER_STRIPPED_NODES,
+					IDisassemblerTracker::UPDATE_INCREMENT_COUNTER);
 				CfgNodeForCurrentFrame.erase(TouchIterator,
 					CfgNodeForCurrentFrame.end());
 				CfgNodeForCurrentFrame.NonBranchingLeftNode = OptionalCollidingNode;
 				CfgNodeForCurrentFrame.LinkNodeIntoRemoteNodeInputList(*OptionalCollidingNode);
+
+				// Security checks
+				if (CfgNodeForCurrentFrame.empty())
+					throw std::logic_error("Stripping cannot result in empty node");
+
 				return true;
 			}
 		}
@@ -703,8 +713,8 @@ private:
 		for (;;) {
 
 			// Allocate instruction entry for current cfg node frame
-			CfgTraversalStack.DataTracker(IDecompilerTracker::TRACKER_CFGNODE_COUNT,
-				IDecompilerTracker::UPDATE_INCREMENT_COUNTER);
+			CfgTraversalStack.DataTracker(IDisassemblerTracker::TRACKER_CFGNODE_COUNT,
+				IDisassemblerTracker::UPDATE_INCREMENT_COUNTER);
 			auto& CfgNodeEntry = CfgNodeForCurrentFrame->AllocateCfgNodeEntry();
 			xed_decoded_inst_zero_set_mode(&CfgNodeEntry.DecodedInstruction,
 				&IntelXedState);
@@ -739,8 +749,8 @@ private:
 			case XED_ERROR_NONE: {
 
 				// Xed successfully decoded the instruction, copy the instruction to the cfg entry
-				CfgTraversalStack.DataTracker(IDecompilerTracker::TRACKER_INSTRUCTION_COUNT,
-					IDecompilerTracker::UPDATE_INCREMENT_COUNTER);
+				CfgTraversalStack.DataTracker(IDisassemblerTracker::TRACKER_INSTRUCTION_COUNT,
+					IDisassemblerTracker::UPDATE_INCREMENT_COUNTER);
 				auto InstructionLength = xed_decoded_inst_get_length(&CfgNodeEntry.DecodedInstruction);
 
 				memcpy(&CfgNodeEntry.InstructionText,
@@ -858,16 +868,16 @@ private:
 						if (Inserted) {
 
 							// Track data and link into spliced node
-							CfgTraversalStack.DataTracker(IDecompilerTracker::TRACKER_SPLICED_NODES,
-								IDecompilerTracker::UPDATE_INCREMENT_COUNTER);
+							CfgTraversalStack.DataTracker(IDisassemblerTracker::TRACKER_SPLICED_NODES,
+								IDisassemblerTracker::UPDATE_INCREMENT_COUNTER);
 							CfgNodeForCurrentFrame->LinkNodeIntoRemoteNodeInputList(*OptionalPossibleCollidingNode);
 							CfgNodeForCurrentFrame->BranchingOutRightNode.push_back(OptionalPossibleCollidingNode);
 							return STATUS_RECURSIVE_OK;
 						}
 
 						// Execution continues here if overlaying assembly was found
-						CfgTraversalStack.DataTracker(IDecompilerTracker::TRACKER_OVERLAYING_COUNT,
-							IDecompilerTracker::UPDATE_INCREMENT_COUNTER);
+						CfgTraversalStack.DataTracker(IDisassemblerTracker::TRACKER_OVERLAYING_COUNT,
+							IDisassemblerTracker::UPDATE_INCREMENT_COUNTER);
 						throw CfgToolException("Overlaying assembly was found, not yet supported, fatal",
 							CfgToolException::STATUS_OVERLAYING_CODE_DETECTED);
 					}
@@ -925,8 +935,8 @@ private:
 							CfgNodeForCurrentFrame->TerminateThisNodeAsCfgExit();
 		
 						// Track and log, then return
-						CfgTraversalStack.DataTracker(IDecompilerTracker::TRACKER_HEURISTICS_TRIGGER,
-							IDecompilerTracker::UPDATE_INCREMENT_COUNTER);
+						CfgTraversalStack.DataTracker(IDisassemblerTracker::TRACKER_HEURISTICS_TRIGGER,
+							IDisassemblerTracker::UPDATE_INCREMENT_COUNTER);
 						SPDLOG_WARN("Located __fastfail interrupt 29h, treating as function exit");
 						return STATUS_RECURSIVE_OK;
 					}
@@ -961,8 +971,8 @@ private:
 			case XED_ERROR_BAD_MAP:
 			case XED_ERROR_BAD_EVEX_V_PRIME:
 			case XED_ERROR_BAD_EVEX_Z_NO_MASKING:
-				CfgTraversalStack.DataTracker(IDecompilerTracker::TRACKER_DECODE_ERRORS,
-					IDecompilerTracker::UPDATE_INCREMENT_COUNTER);
+				CfgTraversalStack.DataTracker(IDisassemblerTracker::TRACKER_DECODE_ERRORS,
+					IDisassemblerTracker::UPDATE_INCREMENT_COUNTER);
 				CfgNodeForCurrentFrame->SetNodeIsIncomplete();
 				SPDLOG_WARN("A bad decode of type {} was raised by xed, state could be invalid",
 					xed_error_enum_t2str(IntelXedResult));
@@ -984,8 +994,8 @@ private:
 			case XED_ERROR_INVALID_MODE:
 			case XED_ERROR_BAD_EVEX_LL:
 			case XED_ERROR_BAD_REG_MATCH:
-				CfgTraversalStack.DataTracker(IDecompilerTracker::TRACKER_DECODE_ERRORS,
-					IDecompilerTracker::UPDATE_INCREMENT_COUNTER);
+				CfgTraversalStack.DataTracker(IDisassemblerTracker::TRACKER_DECODE_ERRORS,
+					IDisassemblerTracker::UPDATE_INCREMENT_COUNTER);
 				CfgNodeForCurrentFrame->SetNodeIsIncomplete();
 				SPDLOG_WARN(XedTextError[IntelXedResult - XED_ERROR_BAD_MEMOP_INDEX]);
 				return STATUS_POTENTIALLY_BAD_DECODE;

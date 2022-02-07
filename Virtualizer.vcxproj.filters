@@ -27,10 +27,10 @@
     <ClCompile Include="StatisticsTracker.ixx">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="DecompilerEngine.ixx">
+    <ClCompile Include="SymbolHelp.ixx">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="SymbolHelp.ixx">
+    <ClCompile Include="DisassemblerEngine.ixx">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

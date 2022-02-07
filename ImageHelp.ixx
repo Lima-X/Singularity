@@ -147,13 +147,15 @@ public:
 		FILESHARE_READ = FILE_SHARE_READ,
 		FILESHARE_WRITE = FILE_SHARE_WRITE,
 		FILESHARE_READWRITE = FILE_SHARE_READ | FILE_SHARE_WRITE,
+		FILESHARE_ALL = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+
 		FILESHARE_EXCLUSIVE = 0
 	};
 
 	ImageLoader(
-		IN  std::string_view ImageFileName,
-		OPT FileAccessRights FileAccess = FILE_READWRITE,
-		OPT FileShareRights  FileSharing = FILESHARE_READ
+		IN  const std::string_view& ImageFileName,
+		OPT       FileAccessRights  FileAccess = FILE_READWRITE,
+		OPT       FileShareRights   FileSharing = FILESHARE_READ
 	) {
 		TRACE_FUNCTION_PROTO;
 
@@ -556,7 +558,7 @@ private:
 	#define MAP_ENUM_TO_TYPE(Enum, Type) template<>\
 	struct TypeEnum<Enum> {\
 		using type = Type;\
-	};
+	}
 	MAP_ENUM_TO_TYPE(GET_DOS_HEADER, IMAGE_DOS_HEADER&);
 	MAP_ENUM_TO_TYPE(GET_IMAGE_HEADER, IMAGE_NT_HEADERS&);
 	MAP_ENUM_TO_TYPE(GET_FILE_HEADER, IMAGE_FILE_HEADER&);
