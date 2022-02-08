@@ -29,6 +29,9 @@ public:
 		STATUS_INVALID_MEMORY_ADDRESS,
 		STATUS_IMAGE_NOT_SUITABLE,
 		STATUS_UNSUPPORTED_RELOCATION,
+		STATUS_HANDLE_ALREADY_REJECTED,
+		STATUS_IMAGE_ALREADY_MAPPED,
+		STATUS_ALREADY_UNMAPPED_VIEW,
 
 		STATUS_INVALID_STATUS = 0
 	};
@@ -42,6 +45,16 @@ public:
 			CommonExceptionType::EXCEPTION_IMAGE_HELP) {
 		TRACE_FUNCTION_PROTO;
 	}
+};
+
+
+// Interface for getting the base functionality in order to avoid crtp-plugin type issues
+export class IImageHelper {
+public:
+
+	virtual byte_t* GetImageFileMapping() const = 0;
+
+	virtual std::string_view GetImageFileName() const = 0;
 };
 
 
@@ -121,7 +134,8 @@ private:
 // in order to more easily work with coff images and parse or edit them.
 export template<template<class> class... T>
 class ImageLoader : 
-	public T<ImageLoader<T...>>... {
+	public T<ImageLoader<T...>>...,
+	public IImageHelper {
 
 	enum ImageHelpWorkState {
 		IMAGEHELP_REFUSE = -2000, // A post detection found an issue with the object,
@@ -153,14 +167,15 @@ public:
 	};
 
 	ImageLoader(
-		IN  const std::string_view& ImageFileName,
+		IN  const std::string_view& ImageFileName2,
 		OPT       FileAccessRights  FileAccess = FILE_READWRITE,
 		OPT       FileShareRights   FileSharing = FILESHARE_READ
-	) {
+	) 
+		: ImageFileName(ImageFileName2) {
 		TRACE_FUNCTION_PROTO;
 
 		// Try and open desired file, otherwise break out
-		FileHandle = CreateFileA(ImageFileName.data(),
+		FileHandle = CreateFileA(ImageFileName.c_str(),
 			static_cast<DWORD>(FileAccess),
 			static_cast<DWORD>(FileSharing),
 			nullptr,
@@ -181,10 +196,24 @@ public:
 		TRACE_FUNCTION_PROTO;
 
 		// Unmap and discard changes, then close the file and exit
-		ReconstructOptionalAndUnmapImage(true);
+		RejectAndDiscardFileChanges();
+		if (FileHandle != INVALID_HANDLE_VALUE) {
+			CloseHandle(FileHandle);
+			SPDLOG_INFO("Closed file handle [{}]",
+				FileHandle);
+		}
+	}
+
+	void RejectFileCloseHandles() { // Oneshot function that closes all handles to the file,
+		                            // the file cannot be read from or written to after this function has been called.
+		                            // In order to write the changes to the file or a new file the class offers such interfaces
+		TRACE_FUNCTION_PROTO;
+
+		if (FileHandle == INVALID_HANDLE_VALUE)
+			throw ImageHelpException("Filehandle has already been closed and rejected",
+				ImageHelpException::STATUS_HANDLE_ALREADY_REJECTED);
 		CloseHandle(FileHandle);
-		SPDLOG_INFO("Closed file handle [{}]",
-			FileHandle);
+		FileHandle = INVALID_HANDLE_VALUE;
 	}
 #pragma endregion
 
@@ -203,7 +232,17 @@ public:
 		IN    DWORD  Win32PageProtection = PAGE_READWRITE // A win32 compatible page protection to use for the mappings
 	) {
 		TRACE_FUNCTION_PROTO;
-	
+
+		// Check if FileHandle has been rejected or if we are mapped already
+		if (FileHandle == INVALID_HANDLE_VALUE)
+			throw ImageHelpException("The filehandle has already been rejected, cannot map rejected file",
+				ImageHelpException::STATUS_HANDLE_ALREADY_REJECTED);
+		if (ImageMapping.get())
+			throw ImageHelpException(
+				fmt::format("The image has already been mapped to {}, may not map twice",
+					static_cast<void*>(ImageMapping.get())),
+				ImageHelpException::STATUS_IMAGE_ALREADY_MAPPED);
+
 		// Validate image type by testing DOS header for magic value
 		auto DosHeaderSignature = ReadFileTypeByOffset<
 			decltype(IMAGE_DOS_HEADER::e_magic)>(
@@ -346,44 +385,90 @@ public:
 
 		return (ImageMapping = std::move(ReservedMemory2)).get();
 	}
-	void ReconstructOptionalAndUnmapImage(   // Tries to rebuild the physical image file from the mapped image,
-		                                     // by introspecting the headers and composition, image has to be loadable.
-		bool DiscardChangesOnlyUnmap = false // Specifies that the made changes should be ignored 
-		                                     // and the file shall not be rebuild from memory.
+	byte_t* MapImageIntoMemoryAndReject(                  // Same as above function but rejects the file handle immediatly
+		INOUT void*  DesiredMapping = nullptr,            //
+		IN    size_t VirtualExtension = 0,				  //
+		IN    DWORD  Win32PageProtection = PAGE_READWRITE //
 	) {
-		TRACE_FUNCTION_PROTO; 
+		TRACE_FUNCTION_PROTO;
 
-		// Check if any mapping is available
-		if (ImageMapping) {
-			
-			// Check if we should reconstruct the image or discard its changes
-			if (!DiscardChangesOnlyUnmap) {
+		auto ImageMapping = MapImageIntoMemory(DesiredMapping,
+			VirtualExtension,
+			Win32PageProtection);
+		RejectFileCloseHandles();
+		return ImageMapping;
+	}
+	
+	void WriteBackChangesAndUnmap() { // Writes back the changes made to the original file,
+		                              // closes it and unmaps the locally held view of the file in memory.
+		                              // The file must still exist on disk and be accessible, otherwise throws
+		TRACE_FUNCTION_PROTO;
 
-				// Rebuild the image from virtual memory, this process is basically the mapping process in reverse
-				auto SectionHeaderTable = GetCoffMemberByTemplateId<GET_SECTION_HEADERS>();
-				for (auto& Section : SectionHeaderTable) {
+		// Check if the file has been rejected already
+		HANDLE DisposableFileHandle = FileHandle;
+		if (DisposableFileHandle == INVALID_HANDLE_VALUE) {
 
-					RequestReadWriteFileIo(FILE_IO_WRITE,
-						Section.PointerToRawData,
-						ImageMapping.get() + Section.VirtualAddress,
-						Section.SizeOfRawData);
-					SPDLOG_INFO("Reconstructed section \"{}\" at rva {:#x} with size {}",
-						std::string_view(reinterpret_cast<char*>(Section.Name), 
-							IMAGE_SIZEOF_SHORT_NAME),
-						Section.VirtualAddress,
-						Section.Misc.VirtualSize);
-				}
-			}
-
-			// Unmap the image by releasing its virtual memory
-			auto MappingAddressFallback = ImageMapping.get();
-			ImageMapping.reset();
-			SPDLOG_INFO("Unmapped image from {}",
-				static_cast<void*>(MappingAddressFallback));
-			return;
+			// File handle has been disposed already, need to reopen file
+			DisposableFileHandle = CreateFileA(ImageFileName.c_str(),
+				GENERIC_WRITE,
+				FILE_SHARE_READ,
+				nullptr,
+				OPEN_EXISTING,
+				FILE_ATTRIBUTE_NORMAL,
+				nullptr);
+			if (DisposableFileHandle == INVALID_HANDLE_VALUE)
+				throw ImageHelpException(
+					fmt::format("Failed to reopen file \"{}\" with {}",
+						ImageFileName,
+						GetLastError()),
+					ImageHelpException::STATUS_FAILED_TO_OPEN_FILE);
+			SPDLOG_INFO("Reopened file \"{}\" with {} access rights",
+				ImageFileName,
+				GENERIC_WRITE);
 		}
 
-		SPDLOG_DEBUG("No image was mapped at the time of the call to unmap, was this intended ?");
+		ReconstructImageFromViewWriteBackAndRelease(DisposableFileHandle);
+	}
+	void WriteChangesToNewFileAndUnmap(
+		IN const std::string_view& NewFileName
+	) {
+		TRACE_FUNCTION_PROTO;
+
+		// Check if a filehandle is still open and reject it
+		if (FileHandle != INVALID_HANDLE_VALUE)
+			RejectFileCloseHandles();
+		ImageFileName = NewFileName;
+
+		// Try to create a new file to write the new image to
+		auto DisposableFileHandle = CreateFileA(ImageFileName.c_str(),
+			GENERIC_WRITE,
+			FILE_SHARE_READ,
+			nullptr,
+			CREATE_ALWAYS,
+			FILE_ATTRIBUTE_NORMAL,
+			nullptr);
+		if (DisposableFileHandle == INVALID_HANDLE_VALUE)
+			throw ImageHelpException(
+				fmt::format("Failed to reopen file \"{}\" with {}",
+					ImageFileName,
+					GetLastError()),
+				ImageHelpException::STATUS_FAILED_TO_OPEN_FILE);
+		SPDLOG_INFO("Opened new file \"{}\" with {} access rights",
+			ImageFileName,
+			GENERIC_WRITE);
+
+		ReconstructImageFromViewWriteBackAndRelease(DisposableFileHandle);
+	}
+
+	void RejectAndDiscardFileChanges() {
+		TRACE_FUNCTION_PROTO;
+
+		// Check if a filehandle is still open and reject it
+		if (FileHandle != INVALID_HANDLE_VALUE)
+			RejectFileCloseHandles();
+
+		ImageMapping.reset();
+		ImageFileName.clear();
 	}
 #pragma endregion
 
@@ -602,12 +687,66 @@ public:
 	byte_t* GetImageFileMapping() const {
 		TRACE_FUNCTION_PROTO; return ImageMapping.get();
 	}
+	std::string_view GetImageFileName() const {
+		TRACE_FUNCTION_PROTO; return ImageFileName;
+	}
 
 // Minimal private sector, just required to store the file handled and a object to reference the mapping
 private:
+	void ReconstructImageFromViewWriteBackAndRelease( // Reconstructs the physical image from the in memory view
+													  // and writes it to the passed file handle,
+													  // then closes the file and unmaps the view, disposing this object
+		IN HANDLE& DisposableFileHandle               // The file to write the changes to and dispose
+	) {
+		TRACE_FUNCTION_PROTO;
+
+		// Set internal file handle and check if any mapping is available
+		FileHandle = DisposableFileHandle;
+		if (!ImageMapping)
+			throw ImageHelpException("Cannot reconstruct image from already unmapped view",
+				ImageHelpException::STATUS_ALREADY_UNMAPPED_VIEW);
+
+		// Rebuild the image from virtual memory, this process is basically the mapping process in reverse
+		{
+			// Write the image headers to disk
+			auto HeaderSizes = GetCoffMemberByTemplateId<GET_OPTIONAL_HEADER>().SizeOfHeaders;
+			RequestReadWriteFileIo(FILE_IO_WRITE,
+				0,
+				ImageMapping.get(),
+				HeaderSizes);
+			SPDLOG_INFO("Wrote back header information to file of size {}",
+				HeaderSizes);
+
+			// Write the actual content, aka the sections of the image
+			auto SectionHeaderTable = GetCoffMemberByTemplateId<GET_SECTION_HEADERS>();
+			for (auto& Section : SectionHeaderTable) {
+
+				RequestReadWriteFileIo(FILE_IO_WRITE,
+					Section.PointerToRawData,
+					ImageMapping.get() + Section.VirtualAddress,
+					Section.SizeOfRawData);
+				SPDLOG_INFO("Reconstructed section \"{}\" at rva {:#x} with size {}",
+					std::string_view(reinterpret_cast<char*>(Section.Name),
+						IMAGE_SIZEOF_SHORT_NAME),
+					Section.VirtualAddress,
+					Section.Misc.VirtualSize);
+			}
+		}
+
+		// Close and dispose handles to file, can use rejection function for that,
+		// then unmap and release view of file.
+		RejectFileCloseHandles();
+		DisposableFileHandle = INVALID_HANDLE_VALUE;
+		SPDLOG_INFO("Unmapped image from {}",
+			static_cast<void*>(ImageMapping.get()));
+		ImageMapping.reset();
+		ImageFileName.clear();
+	}
+
 	VirtualPointer<std::unique_ptr> 
 	       ImageMapping;
 	HANDLE FileHandle = INVALID_HANDLE_VALUE;
+	std::string ImageFileName;
 };
 
 
@@ -655,6 +794,26 @@ public:
 					- this->GetUnderlyingCrtpBase().GetImageFileMapping()));
 	}
 #pragma endregion
+
+	uint32_t ApproximateNumberOfRelocationsInImage() const { // Calculates a rough estimate of the number of relocations in the image,
+		                                                     // by taking the average of the higher and lower bounds.
+		TRACE_FUNCTION_PROTO;
+
+		T& Underlying = this->GetUnderlyingCrtpBase();
+		auto& RelocationDirectory = Underlying.GetCoffMemberByTemplateId<T::GET_DATA_DIRECTORIES>(
+			)[IMAGE_DIRECTORY_ENTRY_BASERELOC];
+		uint32_t MaxNumberOfRelocations = RelocationDirectory.Size / 2;
+
+		auto SectionHeaders = Underlying.GetCoffMemberByTemplateId<T::GET_SECTION_HEADERS>();
+		auto SizeOfPrimaryImage = SectionHeaders.back().VirtualAddress +
+			SectionHeaders.back().Size -
+			SectionHeaders.front().VirtualAddress;
+		uint32_t MinNumberOfRelocations = MaxNumberOfRelocations - 
+			SizeOfPrimaryImage / 4096;
+
+		return (MaxNumberOfRelocations + MinNumberOfRelocations) / 2;
+	}
+
 };
 
 // Special public name for the image loader and image editor (etc.) tool

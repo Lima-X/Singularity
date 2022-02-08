@@ -6,6 +6,7 @@ module;
 #include <dia2.h>
 
 export module SymbolHelp;
+import ImageHelp;
 
 #define MAKE_SYMHELP_HRESULT(Severity, StatusCode)\
 	(((Severity) << 31) | (1 << 29) | ((StatusCode & 0xffff)))
@@ -37,6 +38,16 @@ public:
 
 export class SymbolHelp {
 public:
+	SymbolHelp(
+		IN const IImageHelper& ImageHelpInterface,
+		IN const std::string_view& PdbSearchPath = {}
+	)
+		: SymbolHelp(ImageHelpInterface.GetImageFileName(),
+			PdbSearchPath) {
+		TRACE_FUNCTION_PROTO;
+
+		InstallPdbFileMappingVirtualAddress(ImageHelpInterface.GetImageFileMapping());
+	}
 	SymbolHelp(
 		IN const std::string_view& PdbExeFileName,
 		IN const std::string_view& PdbSearchPath = {}
@@ -89,7 +100,6 @@ public:
 		if (ComResult != S_OK)
 			throw std::runtime_error("did not set imagebase for symbol translation");
 	}
-
 
 	byte_t* FindAddressForSymbol(
 		IN const std::string_view& SymbolName,
@@ -205,7 +215,7 @@ public:
 
 		}
 		
-	
+		return FunctionList;
 	}
 
 

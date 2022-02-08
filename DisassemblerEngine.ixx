@@ -495,7 +495,7 @@ public:
 	virtual void operator()(                  // This function is called from the disassembler engine context, stacktraces can be taken
 		IN InformationUpdateType UpdateType,  // The specific counter or tracker entry the disassembler engine wants to modify
 		IN UpdateInformation     Operation    // How the caller wants to modify the counter, what it actually does is up to the implementor
-		) const {
+		) {
 		TRACE_FUNCTION_PROTO;
 	}
 };
@@ -524,7 +524,7 @@ export class CfgGenerator {
 			RECURSIVE_BRANCH_TAKEN       // A branch was taken by the engine, BFS was incremented
 		} CallerBranchType;              // whether or not the caller invoked as is branched or not  (passed down)
 
-		IN const IDisassemblerTracker& DataTracker;
+		IN IDisassemblerTracker& DataTracker;
 	};
 
 public:

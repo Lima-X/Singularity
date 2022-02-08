@@ -11,6 +11,7 @@ import DisassemblerEngine;
 
 using namespace std::chrono_literals;
 namespace chrono = std::chrono;
+export using uint24_t = uint32_t;
 
 // Text progress bar, temp, will be used later for statstics when im done with the CFG generator
 export class TextProgressBar {
@@ -52,8 +53,8 @@ public:
 				TimerSinceLastRotation = TimePointNow;
 			}
 
-			auto WidthOfProgress = std::lround(ProgressBarWidth * CurrentProgress);
 			// Desired result: "[=====         ] xx,xx% (MM:ss:mmmm)"
+			auto WidthOfProgress = std::lround(ProgressBarWidth * CurrentProgress);
 			return fmt::format("[[{0:=<{2}}{0: <{3}}] {4}% [{5}]]", "",
 				ProgressBarWidth,
 				WidthOfProgress,
@@ -109,10 +110,52 @@ private:
 "{0:-<{3}}\n"\
 "Analyzing {}:{}"
 
+/*
+Statically analyzing image and processing passes...
+-------------------------------------------------------------------------------------
+Global Progress: [######----------------------------------------] 17,24% (00:14:0789)
+Sub Processing:  [####################################----------] 78,63% (00:01:0024)
+--------------------------+----------------------------------------------------------
+0000ffff72ab52ec:+00d2000 | FindObjectInNodeGraphByTokenAndReference
+.text:+0036f30            |
+--------------------------+----------+--------------------------------------------------
+Frames analyzed: 742 / 3836          | Frames Virtualized: 4
+Total CFG-Nodes: 2783                |      Nodes Mutated: 28
+Opcodes decoded: 684902              |     Opcodes Lifted: 278
+-------------------------------------+--------------------------------------------------
+*/
 
 
 export class StatisticsTracker 
 	: public IDisassemblerTracker {
+
+	static constexpr const char* SummaryCurrentStates[]{
+		"Initializing process and virtualizer...",
+		"Trying to load symbol file for executable...",
+		"Trying to load and map image into process memory...",
+		"Relocating image in memory...",
+		"",
+		"Compiling new virtual/mutated comdat, and link into image",
+		"Regenerating relocation table for mutations"
+	};
+	static constexpr const char* SummaryViewLines[]{
+		// Primary header: Current status line and progress
+		"{0:-<86}",
+		"Primary-Progress: {}",
+		"    Sub-Progress: {}",
+
+		// Non primary header: location of interest + symbol (if available)
+		"{0:-<27}+{0:-<58}",
+		"{:016x}:+{:07x} | {:67s}"
+		"{:<8s}:+{:07x}{: <{}}|"
+
+		// Nph: Meta statistics for a quick over view
+		"Frames analyzed: {} / {}{: <{}}|",
+		"Total CFG-Nodes: {:}|",
+	};
+
+
+
 public:
 	using IntergerCountRatio = std::pair<uint32_t, uint32_t>;
 
@@ -127,7 +170,7 @@ public:
 	void operator()(
 		IN IDisassemblerTracker::InformationUpdateType InformationType,
 		IN IDisassemblerTracker::UpdateInformation     UpdateType
-		) const override {
+		) override {
 		TRACE_FUNCTION_PROTO;
 
 		switch (InformationType) {
@@ -151,26 +194,33 @@ public:
 	void TryPrint() {
 		TRACE_FUNCTION_PROTO;
 
+		// Move back the cursor to the previous location 
+		fmt::print("\x1B[{}F", NumberOfLinesPrinted);
 
+		// Print Progressbars 
 
 	}
 
 private:
+
 	IntergerCountRatio NumberOfFunctions;
 	TextProgressBar    GlobalProgress;
 	TextProgressBar    VirtualFrameProgress;
 
 	// Standard expected 
-	mutable uint32_t NumberOfNodesAnalyzed;
-	mutable uint32_t NumberOfInstructions;
-	mutable uint32_t NumberOfStrippedNodes;
-	mutable uint32_t NumberOfSlicedNodes;
-	mutable uint32_t NoHeuristicsTriggered;
+	uint32_t NumberOfNodesAnalyzed;
+	uint32_t NumberOfInstructions;
+	uint32_t NumberOfStrippedNodes;
+	uint32_t NumberOfSlicedNodes;
+	uint32_t NoHeuristicsTriggered;
 
 	// Defects and errors and issues
-	mutable uint32_t NumberOfOverlayDefects;
-	mutable uint32_t NumberOfUnresolvedBr;
-	mutable uint32_t NumberOfDecodeErrors;
+	uint32_t NumberOfOverlayDefects;
+	uint32_t NumberOfUnresolvedBr;
+	uint32_t NumberOfDecodeErrors;
 	
+	uint32_t NumberOfLinesPrinted = 0;
+
+
 };
 

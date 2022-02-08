@@ -186,12 +186,16 @@ export int32_t main(
 	// Instantiate prerequisites such as loggers and external libraries
 	xed_state_t IntelXedConfiguration;
 	ConsoleModifier ScopedConsole;
-	ProgramOptions Configuration;
 	try {
-		// Initialize COM / OLE
+		// Initialize COM / OLE Components
 		auto ComResult = CoInitializeEx(NULL,
 			COINIT_MULTITHREADED);
+		if (FAILED(ComResult)) {
 
+			SPDLOG_ERROR("COM failed to initilialize with {}",
+				ComResult);
+			return STATUS_FAILED_INITILIZATION;
+		}
 
 		// Initialize xed's tables and configure encoder, decoder
 		xed_tables_init();
@@ -216,36 +220,31 @@ export int32_t main(
 			ExceptionInformation.what());
 		return STATUS_FAILED_INITILIZATION;
 	}
-	
-	// Parse arguments (for now we just check for the file name and try to open it)
-	if (argc != 2) {
 
-		SPDLOG_ERROR("Not enough or too many arguments supplied, call like \"Singularity.exe TargetExecutable\"");
-		return STATUS_FAILED_ARGUMENTS;
+	// Define and parse program options (TODO: do it)
+	ProgramOptions Configuration;
+	{
+		// Parse arguments (for now we just check for the file name and try to open it)
+		if (argc != 2) {
+
+			SPDLOG_ERROR("Not enough or too many arguments supplied, call like \"Singularity.exe TargetExecutable\"");
+			return STATUS_FAILED_ARGUMENTS;
+		}
 	}
-	
+
 	// Primary processing closure
 	try {
-		constexpr auto FileName = "TargetExample.exe";
-
-		SymbolHelp SymbolServer(FileName, 
-			"SRV*C:\\Symbols*https://msdl.microsoft.com/download/symbols");
-
 		StatisticsTracker ProfilerSummary(64ms);
-
+		
+		constexpr auto FileName = ".\\ntoskrnl.exe";
 		ImageHelp TargetImage(FileName);
-
 		TargetImage.MapImageIntoMemory();
+		TargetImage.RejectFileCloseHandles();
 		TargetImage.RelocateImageToMappedOrOverrideBase();
 		
-		SymbolServer.InstallPdbFileMappingVirtualAddress(
-			TargetImage.GetImageFileMapping());
-
-
-
-		__debugbreak();
-
-
+		SymbolHelp SymbolServer(TargetImage,
+			"SRV*C:\\Symbols*https://msdl.microsoft.com/download/symbols");
+		
 		CfgGenerator ControlFlowGraphGenerator(TargetImage,
 			IntelXedConfiguration);
 		
@@ -282,7 +281,7 @@ export int32_t main(
 					GraphException.ExceptionText);
 
 				// if (IsDebuggerPresent())
-					__debugbreak();
+				// 	__debugbreak();
 			}
 
 
@@ -291,14 +290,14 @@ export int32_t main(
 
 
 		// Discard changes for now
-		TargetImage.ReconstructOptionalAndUnmapImage(true);
+		TargetImage.RejectAndDiscardFileChanges();
 	}
 	catch (const ImageHelpException& MapperException) {
 
 		SPDLOG_ERROR("ImageHelp failed with [{}] : \"{}\"",
 			MapperException.StatusCode,
 			MapperException.ExceptionText);
-		return STATUS_FAILED_IMAGEHELP;
+ 		return STATUS_FAILED_IMAGEHELP;
 	}
 	catch (const std::exception& ExceptionInformation) {
 
