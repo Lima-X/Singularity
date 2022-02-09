@@ -15,7 +15,7 @@ cl /c /Od /Oi- /EHsc /fp:precise /GF /GS- /Gu /Gy /I .. /std:c++20 /Zi ^
 ml64 /c /Cp /nologo /W3 /Zd /Zf /Zi ..\TargetExampleStub.asm
 link TargetExample.obj TargetExampleStub.obj ..\lvmlib64.lib ^
 /debug:full /dynamicbase /entry:EntryPoint /largeaddressaware ^
-/machine:x64 /nodefaultlib /nxcompat /release /subsystem:windows
+/machine:x64 /nodefaultlib /nologo /nxcompat /release /subsystem:windows
 
 rem Cleanup some of the files generated during building end restore origional env
 del /f /q .\TargetExample.obj

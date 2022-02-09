@@ -143,6 +143,52 @@ public:
 		DiaSession->get_loadAddress(&ImageBase);
 		return VirtualAddress + ImageBase;
 	}
+	std::pair<byte_t*, size_t> FindFunctionFrameByName(
+		IN const std::string_view& FunctionNameDecorated
+	) {
+		TRACE_FUNCTION_PROTO;
+
+		auto FunctionNameDecorated2 = ConvertAnsiToUnicode(FunctionNameDecorated);
+
+		CComPtr<IDiaEnumSymbols> SymbolIterator;
+		auto ComResult = DiaSymbols->findChildrenEx(SymTagFunction,
+			FunctionNameDecorated2.c_str(),
+			nsfCaseSensitive,
+			&SymbolIterator);
+		if (ComResult != S_OK)
+			throw std::runtime_error("FindChildrenEx failed to locate symbols");
+
+		CComPtr<IDiaSymbol> Symbol;
+		ulong_t Fetched;
+		ComResult = SymbolIterator->Next(1,
+			&Symbol,
+			&Fetched);
+		if (ComResult != S_OK || Fetched != 1)
+			throw std::runtime_error("failed to fetch next symbol");
+
+		ulong_t LocationType;
+		ComResult = Symbol->get_locationType(&LocationType);
+		if (ComResult != S_OK)
+			throw std::runtime_error("failed to fetch loctype");
+		if (LocationType != LocIsStatic)
+			return {};
+
+		byte_t* VirtualAddress = nullptr;
+		ComResult = Symbol->get_relativeVirtualAddress(
+			reinterpret_cast<ulong_t*>(&VirtualAddress));
+		if (ComResult != S_OK)
+			throw std::runtime_error("failed to gen address");
+
+		size_t VirtualSize;
+		ComResult = Symbol->get_length(&VirtualSize);
+		if (ComResult != S_OK)
+			throw std::runtime_error("failed to get lenght");
+
+		uintptr_t ImageBase;
+		DiaSession->get_loadAddress(&ImageBase);
+		return std::make_pair(VirtualAddress + ImageBase, VirtualSize);
+	}
+
 
 	std::string FindSymbolForAddress(
 		IN      byte_t*    VirtualAddress,

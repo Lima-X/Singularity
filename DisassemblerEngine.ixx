@@ -27,6 +27,7 @@ public:
 		STATUS_DFS_INVALID_SEARCH_CALL,
 		STATUS_OVERLAYING_CODE_DETECTED,
 		STATUS_NESTED_TRAVERSAL_DISALLOWED,
+		STATUS_UNSUPPORTED_RETURN_VALUE,
 
 		STATUS_INVALID_STATUS = 0
 	};
@@ -162,17 +163,16 @@ public:
 				if (Node->NonBranchingLeftNode == this)
 					Node->NonBranchingLeftNode = SplicedNodeHead;
 				for (auto& Link : Node->BranchingOutRightNode)
-					if (Link == this) {
-						Link = SplicedNodeHead; break;
-					}
+					if (Link == this)
+						Link = SplicedNodeHead;
 			}
 			SplicedNodeHead->InputFlowNodeLinks = std::move(InputFlowNodeLinks);
 			InputFlowNodeLinks.push_back(SplicedNodeHead);
 			SplicedNodeHead->insert(SplicedNodeHead->begin(),
 				this->begin(),
-				SpliceIterator + 1);
+				SpliceIterator);
 			this->erase(this->begin(),
-				SpliceIterator + 1);
+				SpliceIterator);
 			SplicedNodeHead->NonBranchingLeftNode = this;
 
 			// Security checks, verify nodes contain data
@@ -384,6 +384,23 @@ public:
 			throw std::logic_error("DFS cannot return unsupported search result");
 		}
 	}
+	CfgNode* FindNodeContainingVirtualAddress(
+		IN       TreeTraversalMode SearchEvaluationMode,
+		IN const byte_t*           VirtualAddress
+	) {
+		TRACE_FUNCTION_PROTO;
+
+		return TraverseOrLocateNodeBySpecializedDFS(
+			SearchEvaluationMode,
+			[VirtualAddress](
+				IN ControlFlowGraph::CfgNode* TraversalNode
+				) -> bool {
+					TRACE_FUNCTION_PROTO;
+					
+					return TraversalNode->GetPhysicalNodeStartAddress() <= VirtualAddress
+						&& TraversalNode->GetPhysicalNodeEndAddress() > VirtualAddress;
+			});
+	}
 
 private:
 	ControlFlowGraph(
@@ -459,8 +476,7 @@ private:
 
 		return STATUS_RECURSIVE_OK;
 	}
-#pragma endregion 
-
+#pragma endregion
 
 
 	const ImageHelp&      OwningImageMapping;
@@ -514,16 +530,19 @@ export class CfgGenerator {
 		IN        byte_t*              NextCodeAddress;         // Virtual address for the next engine frame to disassemble (passed down)
 		IN  const FunctionAddress      PredictedFunctionBounds; // Constants of the function frame itself, start and size   (passed down)
 		OUT ControlFlowGraph::CfgNode* ReturnedHingedTree;      // A pointer to a linked floating assembled tree fragment   (passed up)
-		IN  ControlFlowGraph::CfgNode* FloatingNodeOfPrevious;  // A pointer to the callers node of its frame of the cfg    (passed down)
-		                                                        // The callee has to link itself into the passed node
+		
+		
+		IN    ControlFlowGraph::CfgNode*  FloatingNodeOfPrevious; // A pointer to the callers node of its frame of the cfg  (passed down)
+		                                                          // The callee has to link itself into the passed node     
+		INOUT ControlFlowGraph::CfgNode** NextFrameHookinLink;    // A field for the callee to fill with its node of frame  (shared)
 
-		IN uint32_t BranchingFrameStack; // Number of times the a branch has been taken on the stack (passed down)
-		IN enum {
-			RECURSIVE_INITIAL_CALL = 0,  // The call is the start of the graph, no need to link pre-order
-			RECURSIVE_FALL_THROUGH,      // The invocation has passed the address of a fall through
-			RECURSIVE_BRANCH_TAKEN       // A branch was taken by the engine, BFS was incremented
-		} CallerBranchType;              // whether or not the caller invoked as is branched or not  (passed down)
+		// IN enum {
+		// 	RECURSIVE_INITIAL_CALL = 0,  // The call is the start of the graph, no need to link pre-order
+		// 	RECURSIVE_FALL_THROUGH,      // The invocation has passed the address of a fall through
+		// 	RECURSIVE_BRANCH_TAKEN       // A branch was taken by the engine, BFS was incremented
+		// } CallerBranchType;              // whether or not the caller invoked as is branched or not  (passed down)
 
+		IN uint32_t              BranchingFrameStack; // Number of times the a branch has been taken on the stack (passed down)
 		IN IDisassemblerTracker& DataTracker;
 	};
 
@@ -544,8 +563,8 @@ public:
 	ControlFlowGraph GenerateControlFlowGraphFromFunction( // Tries to generate a cfg using the underlying disassembler engine,
 		                                                   // this function serves as a driver to start the disassembler,
 		                                                   // which then is self reliant, additionally provides a default tracker
-		IN  const FunctionAddress&    PossibleFunction,    // Presumed function bounds in which the engine should try to decompile
-		OPT       IDisassemblerTracker& ExternDataTracker    // A data tracker interface instance, this is used to trace and track
+		IN  const FunctionAddress&      PossibleFunction,  // Presumed function bounds in which the engine should try to decompile
+		OPT       IDisassemblerTracker& ExternDataTracker  // A data tracker interface instance, this is used to trace and track
 	) {
 		TRACE_FUNCTION_PROTO;
 
@@ -586,9 +605,11 @@ public:
 		case STATUS_RECURSIVE_OK:
 			break;
 		case STATUS_POTENTIALLY_BAD_DECODE:
+			SPDLOG_ERROR("Initial callee node already failed to decode opcode");
 			break;
 		default:
-			break;
+			throw CfgToolException("Engine returned unsupported status, in first frame",
+				CfgToolException::STATUS_UNSUPPORTED_RETURN_VALUE);
 		}
 		
 		return CurrentCfgContext;
@@ -608,29 +629,34 @@ public:
 private:
 	bool CheckFallthroughIntoNodeStripExistingAndRebind(     // Checks if the selected node is falling into an existing node
 		                                                     // and eliminates overlaying identical code (assumptions),
-		                                                     // returns true if rebound otherwise false do indicate no work
+		                                                     // returns true if rebound, otherwise false to indicate no work
 		IN DisasseblerEngineState&    CfgTraversalStack,     // The stack location of the disassembly engine for internal use
 		IN ControlFlowGraph::CfgNode& CfgNodeForCurrentFrame // The node to check for overlays and stripping/rebinding
 	) {
 		TRACE_FUNCTION_PROTO;
 
-		if (CfgTraversalStack.BranchingFrameStack &&
-			CfgTraversalStack.CallerBranchType == DisasseblerEngineState::RECURSIVE_FALL_THROUGH) {
+		// Sadly i was wrong about this assumptions, as physical blocks can be located anywhere in space
+		// this means that a jump could possibly end up at a higher location.
+		// This means a node that was not discovered yet could eventually fall through
+		// into an existing node without the check catching it, resulting in duplicates
+		// to avoid this the filter has been removed and is now kept as a piece of history / reminder.
+		// Unfortunately there is not other way to avoid this, the moment a jump exists in the
+		// disassembly engine stack this check has to trigger and catch overlaps
+		// 
+		// && CfgTraversalStack.CallerBranchType == DisasseblerEngineState::RECURSIVE_FALL_THROUGH) {
+		if (CfgTraversalStack.BranchingFrameStack) {
 
 			// Potentially fell into a existing node already, verify and or strip and rebind
 			auto NodeTerminatorLocation = CfgNodeForCurrentFrame.GetPhysicalNodeEndAddress();
-			auto OptionalCollidingNode = CfgTraversalStack.ControlFlowGraphContext.TraverseOrLocateNodeBySpecializedDFS(
+			
+			// Find possibly overlaying node and check
+			auto OptionalCollidingNode = CfgTraversalStack.ControlFlowGraphContext.FindNodeContainingVirtualAddress(
 				ControlFlowGraph::SEARCH_REVERSE_PREORDER_NRL,
-				[NodeTerminatorLocation](
-					IN const ControlFlowGraph::CfgNode* TraversalNode
-					) -> bool {
-						TRACE_FUNCTION_PROTO;
-						return TraversalNode->GetPhysicalNodeEndAddress() == NodeTerminatorLocation;
-				});
+				NodeTerminatorLocation);
 			if (OptionalCollidingNode) {
 
 				// Found node gotta strip it and relink, first find the location of where they touch
-				auto StartAddressOfNode = CfgNodeForCurrentFrame.front().OriginalAddress;
+				auto StartAddressOfNode = OptionalCollidingNode->front().OriginalAddress;
 				auto TouchIterator = std::find_if(CfgNodeForCurrentFrame.begin(),
 					CfgNodeForCurrentFrame.end(),
 					[StartAddressOfNode](
@@ -696,17 +722,20 @@ private:
 
 		// Preinitialize node and pre-order link node into passed down cfg endpoint
 		auto CfgNodeForCurrentFrame = CfgTraversalStack.ControlFlowGraphContext.AllocateFloatingCfgNode();
-		switch (CfgTraversalStack.CallerBranchType) {
-		case DisasseblerEngineState::RECURSIVE_FALL_THROUGH:
-			CfgTraversalStack.FloatingNodeOfPrevious->NonBranchingLeftNode = CfgNodeForCurrentFrame;
-			CfgTraversalStack.FloatingNodeOfPrevious->LinkNodeIntoRemoteNodeInputList(*CfgNodeForCurrentFrame);
-			break;
-
-		case DisasseblerEngineState::RECURSIVE_BRANCH_TAKEN:
-			CfgTraversalStack.FloatingNodeOfPrevious->BranchingOutRightNode.push_back(CfgNodeForCurrentFrame);
-			CfgTraversalStack.FloatingNodeOfPrevious->LinkNodeIntoRemoteNodeInputList(*CfgNodeForCurrentFrame);
-			break;
-		}
+		if (CfgTraversalStack.FloatingNodeOfPrevious)
+			(*CfgTraversalStack.NextFrameHookinLink = CfgNodeForCurrentFrame),
+				CfgTraversalStack.FloatingNodeOfPrevious->LinkNodeIntoRemoteNodeInputList(*CfgNodeForCurrentFrame);
+		// switch (CfgTraversalStack.CallerBranchType) {
+		// case DisasseblerEngineState::RECURSIVE_FALL_THROUGH:
+		// 	CfgTraversalStack.FloatingNodeOfPrevious->NonBranchingLeftNode = CfgNodeForCurrentFrame;
+		// 	CfgTraversalStack.FloatingNodeOfPrevious->LinkNodeIntoRemoteNodeInputList(*CfgNodeForCurrentFrame);
+		// 	break;
+		// 
+		// case DisasseblerEngineState::RECURSIVE_BRANCH_TAKEN:
+		// 	CfgTraversalStack.FloatingNodeOfPrevious->BranchingOutRightNode.push_back(CfgNodeForCurrentFrame);
+		// 	CfgTraversalStack.FloatingNodeOfPrevious->LinkNodeIntoRemoteNodeInputList(*CfgNodeForCurrentFrame);
+		// 	break;
+		// }
 
 		// Initialize decoder loop and begin recursive descent
 		auto VirtualInstructionPointer = CfgTraversalStack.NextCodeAddress;
@@ -812,11 +841,20 @@ private:
 						// Calculate fall through address then dispatch new disassembly frame
 						CfgTraversalStack.NextCodeAddress = VirtualInstructionPointer + InstructionLength;
 						CfgTraversalStack.FloatingNodeOfPrevious = CfgNodeForCurrentFrame;
-						CfgTraversalStack.CallerBranchType = DisasseblerEngineState::RECURSIVE_FALL_THROUGH;
+						// CfgTraversalStack.CallerBranchType = DisasseblerEngineState::RECURSIVE_FALL_THROUGH;
+						CfgTraversalStack.NextFrameHookinLink = &CfgNodeForCurrentFrame->NonBranchingLeftNode;
 						auto SubTreeResult = RecursiveDescentDisassembler(CfgTraversalStack);
+						
 						switch (SubTreeResult) {
-						default:
+						case STATUS_RECURSIVE_OK:
 							break;
+						case STATUS_POTENTIALLY_BAD_DECODE:
+							SPDLOG_WARN("A bad docode was found by the callee, cfg has been partially invalidated");
+							break;
+
+						default:
+							throw CfgToolException("Sub tree pass returned unsupported return value, aborting pass",
+								CfgToolException::STATUS_UNSUPPORTED_RETURN_VALUE);
 						}
 					}
 
@@ -833,18 +871,10 @@ private:
 						LenghtOfInstruction + BranchDisplacement;
 
 					// Attempt to find an colliding node with the new address, if found the type of collision has to be determined
-					auto OptionalPossibleCollidingNode = CfgTraversalStack.ControlFlowGraphContext.TraverseOrLocateNodeBySpecializedDFS(
-						ControlFlowGraph::SEARCH_REVERSE_PREORDER_NRL,
-						[VirtualBranchLocation](
-							IN ControlFlowGraph::CfgNode* TraversalNode
-							) -> bool {
-								TRACE_FUNCTION_PROTO;
-								if (TraversalNode->GetPhysicalNodeStartAddress() <= VirtualBranchLocation &&
-									TraversalNode->GetPhysicalNodeEndAddress() > VirtualBranchLocation)
-									return true;
-								return false;
-						});
-
+					auto OptionalPossibleCollidingNode = CfgTraversalStack.ControlFlowGraphContext.
+						FindNodeContainingVirtualAddress(ControlFlowGraph::SEARCH_REVERSE_PREORDER_NRL,
+							VirtualBranchLocation);
+						
 					// Check if a colliding node was found and if their heads match, aka identical node
 					if (OptionalPossibleCollidingNode &&
 						OptionalPossibleCollidingNode->GetPhysicalNodeStartAddress() == VirtualBranchLocation) {
@@ -856,7 +886,7 @@ private:
 						return STATUS_RECURSIVE_OK;
 					}
 
-					// If the above did not execute but a node was found we have a collision
+					// If the above did not execute, but a node was found, we have a collision
 					if (OptionalPossibleCollidingNode) {
 
 						SPDLOG_DEBUG("A colliding node for said jump was found, fixing up graph");
@@ -886,16 +916,21 @@ private:
 					CfgTraversalStack.NextCodeAddress = VirtualBranchLocation;
 					++CfgTraversalStack.BranchingFrameStack;
 					CfgTraversalStack.FloatingNodeOfPrevious = CfgNodeForCurrentFrame;
-					CfgTraversalStack.CallerBranchType = DisasseblerEngineState::RECURSIVE_BRANCH_TAKEN;
+					// CfgTraversalStack.CallerBranchType = DisasseblerEngineState::RECURSIVE_BRANCH_TAKEN;
+					CfgTraversalStack.NextFrameHookinLink = &CfgNodeForCurrentFrame->BranchingOutRightNode.emplace_back();
 					auto SubTreeResult = RecursiveDescentDisassembler(CfgTraversalStack);
 					--CfgTraversalStack.BranchingFrameStack;
 
 					switch (SubTreeResult) {
+					case STATUS_RECURSIVE_OK:
+						break;
 					case STATUS_POTENTIALLY_BAD_DECODE:
+						SPDLOG_WARN("A bad docode was found by the callee, cfg has been partially invalidated");
 						break;
+	
 					default:
-						SPDLOG_WARN("Unhandled return value");
-						break;
+						throw CfgToolException("Sub tree pass returned unsupported return value, aborting pass",
+							CfgToolException::STATUS_UNSUPPORTED_RETURN_VALUE);
 					}
 
 					// Now link the new found node into the current tree and return that tree

@@ -236,7 +236,7 @@ export int32_t main(
 	try {
 		StatisticsTracker ProfilerSummary(64ms);
 		
-		constexpr auto FileName = ".\\ntoskrnl.exe";
+		const auto FileName = argv[1];
 		ImageHelp TargetImage(FileName);
 		TargetImage.MapImageIntoMemory();
 		TargetImage.RejectFileCloseHandles();
@@ -248,12 +248,25 @@ export int32_t main(
 		CfgGenerator ControlFlowGraphGenerator(TargetImage,
 			IntelXedConfiguration);
 		
+		// Tests
+		auto FunctionAddres = SymbolServer.FindFunctionFrameByName("StubTestFunction2");
+		auto GraphForFunction = ControlFlowGraphGenerator.GenerateControlFlowGraphFromFunction(
+			FunctionAddres);
+		auto InvalidXRefs = GraphForFunction.ValidateCfgOverCrossReferences();
+		__debugbreak();
+
+
+
 		// Enumerate all function entries here
 		auto RuntimeFunctionsView = TargetImage.GetRuntimeFunctionTable();
 		for (const RUNTIME_FUNCTION& RuntimeFunction : RuntimeFunctionsView) {
 
 			// Generate Cfg from function
 			
+			
+
+
+
 			auto SymbolOfFunction = SymbolServer.FindSymbolForAddress(
 				RuntimeFunction.BeginAddress + TargetImage.GetImageFileMapping());
 			auto SymbolAddresesAddress = SymbolServer.FindAddressForSymbol(

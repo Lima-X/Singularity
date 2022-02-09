@@ -16,4 +16,22 @@ StubTestFunction proc FRAME
 	loopend:
 		ret
 StubTestFunction endp
+
+StubTestFunction2 proc FRAME
+	.endprolog
+
+	jmp loop_content
+
+	loop_repeat:
+		xor eax, eax
+
+	loop_content:
+		dec eax
+		jz  loop_end
+		jmp loop_repeat
+
+	loop_end:
+		ret
+
+StubTestFunction2 endp
 end
