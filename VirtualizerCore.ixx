@@ -248,12 +248,6 @@ export int32_t main(
 		CfgGenerator ControlFlowGraphGenerator(TargetImage,
 			IntelXedConfiguration);
 		
-		// Tests
-		auto FunctionAddres = SymbolServer.FindFunctionFrameByName("StubTestFunction2");
-		auto GraphForFunction = ControlFlowGraphGenerator.GenerateControlFlowGraphFromFunction(
-			FunctionAddres);
-		auto InvalidXRefs = GraphForFunction.ValidateCfgOverCrossReferences();
-		__debugbreak();
 
 
 
@@ -263,17 +257,13 @@ export int32_t main(
 
 			// Generate Cfg from function
 			
+			// Tests
+			// auto FunctionAddres = SymbolServer.FindFunctionFrameByName("StubTestFunction2");
+			// auto GraphForFunction = ControlFlowGraphGenerator.GenerateControlFlowGraphFromFunction(
+			// 	FunctionAddres);
+			// auto InvalidXRefs = GraphForFunction.ValidateCfgOverCrossReferences();
+			// __debugbreak();
 			
-
-
-
-			auto SymbolOfFunction = SymbolServer.FindSymbolForAddress(
-				RuntimeFunction.BeginAddress + TargetImage.GetImageFileMapping());
-			auto SymbolAddresesAddress = SymbolServer.FindAddressForSymbol(
-				SymbolOfFunction);
-
-
-
 			try {
 
 				auto GraphForRuntimeFunction = ControlFlowGraphGenerator.GenerateControlFlowGraphFromFunction(

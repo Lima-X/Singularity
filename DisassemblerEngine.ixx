@@ -5,6 +5,7 @@ module;
 
 #include "VirtualizerBase.h"
 #include <vector>
+#include <array>
 #include <functional>
 #include <span>
 #include <algorithm>
@@ -28,6 +29,8 @@ public:
 		STATUS_OVERLAYING_CODE_DETECTED,
 		STATUS_NESTED_TRAVERSAL_DISALLOWED,
 		STATUS_UNSUPPORTED_RETURN_VALUE,
+		STATUS_SPLICING_FAILED_EMPTY_NODE,
+		STATUS_STRIPPING_FAILED_EMPTY_NODE,
 
 		STATUS_INVALID_STATUS = 0
 	};
@@ -177,7 +180,11 @@ public:
 
 			// Security checks, verify nodes contain data
 			if (SplicedNodeHead->empty() || this->empty())
-				throw std::logic_error("splicing cannot result in empty nodes");
+				throw CfgToolException(
+					fmt::format("Splicing of node {} into {}, cannot result in empty node",
+						static_cast<void*>(this),
+						static_cast<void*>(SplicedNodeHead)),
+					CfgToolException::STATUS_SPLICING_FAILED_EMPTY_NODE);
 
 			return true;
 		}
@@ -401,6 +408,29 @@ public:
 						&& TraversalNode->GetPhysicalNodeEndAddress() > VirtualAddress;
 			});
 	}
+	CfgNode* FindNodeContainingVirtualAddressAndExclude(
+		IN       TreeTraversalMode         SearchEvaluationMode,
+		IN const byte_t*                   VirtualAddress,
+		IN       std::span<const CfgNode*> NodeExclusions
+	) {
+		TRACE_FUNCTION_PROTO;
+
+		return TraverseOrLocateNodeBySpecializedDFS(
+			SearchEvaluationMode,
+			[VirtualAddress, &NodeExclusions](
+				IN ControlFlowGraph::CfgNode* TraversalNode
+				) -> bool {
+					TRACE_FUNCTION_PROTO;
+
+					if (std::find(NodeExclusions.begin(),
+						NodeExclusions.end(),
+						TraversalNode) != NodeExclusions.end())
+						return false;
+					return TraversalNode->GetPhysicalNodeStartAddress() <= VirtualAddress
+						&& TraversalNode->GetPhysicalNodeEndAddress() > VirtualAddress;
+			});
+	}
+
 
 private:
 	ControlFlowGraph(
@@ -646,13 +676,14 @@ private:
 		// && CfgTraversalStack.CallerBranchType == DisasseblerEngineState::RECURSIVE_FALL_THROUGH) {
 		if (CfgTraversalStack.BranchingFrameStack) {
 
-			// Potentially fell into a existing node already, verify and or strip and rebind
-			auto NodeTerminatorLocation = CfgNodeForCurrentFrame.GetPhysicalNodeEndAddress();
-			
-			// Find possibly overlaying node and check
-			auto OptionalCollidingNode = CfgTraversalStack.ControlFlowGraphContext.FindNodeContainingVirtualAddress(
+			// Potentially fell into a existing node already, verify and or strip and rebind,
+			// find possibly overlaying node and check
+			auto NodeTerminatorLocation = CfgNodeForCurrentFrame.back().OriginalAddress;
+			std::array<const ControlFlowGraph::CfgNode*, 1> CfgNodeExclusions{ &CfgNodeForCurrentFrame };
+			auto OptionalCollidingNode = CfgTraversalStack.ControlFlowGraphContext.FindNodeContainingVirtualAddressAndExclude(
 				ControlFlowGraph::SEARCH_REVERSE_PREORDER_NRL,
-				NodeTerminatorLocation);
+				NodeTerminatorLocation,
+				std::span{ CfgNodeExclusions });
 			if (OptionalCollidingNode) {
 
 				// Found node gotta strip it and relink, first find the location of where they touch
@@ -675,6 +706,7 @@ private:
 				}
 
 				// Rebind nodes, first erase overlaying data then merge links
+				SPDLOG_INFO("Found fallthrough into existing node, fixing graph");
 				CfgTraversalStack.DataTracker(IDisassemblerTracker::TRACKER_STRIPPED_NODES,
 					IDisassemblerTracker::UPDATE_INCREMENT_COUNTER);
 				CfgNodeForCurrentFrame.erase(TouchIterator,
@@ -684,7 +716,10 @@ private:
 
 				// Security checks
 				if (CfgNodeForCurrentFrame.empty())
-					throw std::logic_error("Stripping cannot result in empty node");
+					throw CfgToolException(
+						fmt::format("Stripping of node {} cannot result in empty node",
+							static_cast<void*>(&CfgNodeForCurrentFrame)),
+						CfgToolException::STATUS_STRIPPING_FAILED_EMPTY_NODE);
 
 				return true;
 			}
