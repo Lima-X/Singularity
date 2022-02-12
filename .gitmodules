@@ -7,3 +7,10 @@
 [submodule "xed"]
 	path = xed
 	url = https://github.com/intelxed/xed.git
+[submodule "imgui"]
+	path = imgui
+	url = https://github.com/ocornut/imgui.git
+	branch = docking
+[submodule "glfw"]
+	path = glfw
+	url = https://github.com/glfw/glfw

@@ -42,7 +42,7 @@
 	#define NOATOM            // Atom Manager routines
 	#define NOCLIPBOARD       // Clipboard routines
 	#define NOCOLOR           // Screen colors
-	#define NOCTLMGR          // Control and Dialog routines
+//	#define NOCTLMGR          // Control and Dialog routines
 	#define NODRAWTEXT        // DrawText() and DT_*
 	#define NOGDI             // All GDI defines and routines
 //	#define NOKERNEL          // All KERNEL defines and routines
@@ -68,9 +68,10 @@
 	#define NOMCX             // Modem Configuration Extensions
 
 // Specific supported windows versions and misc
-#define NTDDI_VERSION NTDDI_WIN6SP1
-#define _WIN32_WINNT _WIN32_WINNT_VISTA
+#define NTDDI_VERSION NTDDI_WINBLUE
+#define _WIN32_WINNT _WIN32_WINNT_WINBLUE
 #define WIN32_LEAN_AND_MEAN
+#define _CRT_SECURE_NO_WARNINGS
 // #define WIN32_NO_STATUS
 #include <Windows.h>
 // #undef WIN32_NO_STATUS
@@ -106,7 +107,7 @@ extern "C" {
 
 // Special logging functionalities 
 #define TRACE_FUNCTION_PROTO static_cast<void>(0)
-#define SPDLOG_SINGULARITY_SMALL_PATTERN "[%^%=7l%$] %v"
+#define SPDLOG_SINGULARITY_SMALL_PATTERN "[%^%=7l%$ : %t ] %v"
 
 // Legacy style type helpers
 #define OFFSET_OF offsetof
@@ -120,6 +121,7 @@ using offset_t = ptrdiff_t;            // Type used to store an offset with a ma
 using byte_t = uint8_t;                // Type used to store arbitrary data in the form of a byte with 8 bits
 using rva_t = long_t;                  // Type used to describe a 31bit image relative offset, anything negative is invalid
 using disp_t = long_t;                 // Type used to represent a 32bit displacement
+using token_t = size_t;                // Type used for tokenized ids, each token is unique to in the process lifetime
 
 #pragma region Active template library components
 #pragma region Smart pointer abstractions for VirtualAlloc
@@ -268,3 +270,13 @@ inline std::string ConvertUnicodeToAnsi(
 	return ResultString;
 }
 #pragma endregion
+
+inline token_t GenerateGlobalUniqueTokenId() {
+	TRACE_FUNCTION_PROTO;
+
+	static std::mutex TokenGenLock;
+	std::lock_guard ScopedLock(TokenGenLock);
+
+	static token_t InitialToken = 0;
+	return ++InitialToken;
+}

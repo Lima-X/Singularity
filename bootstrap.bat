@@ -9,6 +9,11 @@ setlocal
 set OriginalWorkingDirectory=%cd%
 cd %~dp0
 
+rem glfw has to be also build now, as this project is moving to gui for debugging
+cd "..\glfw"
+cmake . -D USE_MSVC_RUNTIME_LIBRARY_DLL=OFF
+msbuild ".\src\glfw.vcxproj" -p:Configuration=Release
+
 rem Build xed, this has special semantics in the context of this specific script,
 rem first we need to clone mbuild for xeds mfile, then we can let xed build.
 rem After xed finished mbuild can be reomoved again and vcvars64 will be loaded
@@ -18,20 +23,14 @@ rd /s /q obj
 rd /s /q mbuild
 call vcvars64.bat
 
-rem If fmt's cmake is unmodified it will be patched and a guard file for checking will be created.
-rem This is a pretty shitty hack to make fmt correctly build with the proper runtime for this project,
-rem but manually letting the user edit the project also sucks, so what gives.
-rem Then build fmt's static library
-if not exist ".\fmt\SINGULARITYCMAKE" (
-	echo set_property(TARGET fmt PROPERTY ^
-	MSVC_RUNTIME_LIBRARY "MultiThreaded")>>".\fmt\CMakeLists.txt"
-	copy /y nul ".\fmt\SINGULARITYCMAKE">nul
-)
-cd ".\fmt" && cmake .
+rem The shitty hack has been fixed, this now forces the creation with MT
+cd ".\fmt"
+cmake . -D CMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded"
 msbuild ".\fmt.vcxproj" -p:Configuration=Release
 
 rem Following spdlog can be build afterwards
-cd "..\spdlog" && cmake .
+cd "..\spdlog"
+cmake . -D CMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded"
 msbuild ".\spdlog.vcxproj" -p:Configuration=Release
 
 rem Additionally the sdk for importing projects will be "build" (more like prepared)
@@ -42,3 +41,5 @@ del /f /q ".\lvmlib64.exp"
 rem Restore original processor environment and exit
 cd %OriginalWorkingDirectory%
 endlocal
+
+rem Imgui needs not building, thats handle within the main app itself
