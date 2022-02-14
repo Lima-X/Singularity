@@ -139,8 +139,6 @@
     <ClCompile Include="DisassemblerEngine.ixx" />
     <ClCompile Include="ImageHelp.ixx" />
     <ClCompile Include="ImGuiImplementation.cpp" />
-    <ClCompile Include="PathAnalyzer.ixx" />
-    <ClCompile Include="StatisticsTracker.ixx" />
     <ClCompile Include="SymbolHelp.ixx" />
     <ClCompile Include="VirtualizerCore.ixx" />
   </ItemGroup>

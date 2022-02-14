@@ -15,14 +15,25 @@
 #include <functional>
 #include <deque>
 #include <mutex>
+#include <filesystem>
 
-import StatisticsTracker;
 import ImageHelp;
 import DisassemblerEngine;
 import SymbolHelp;
 
-using namespace std::chrono;
+using namespace std::literals::chrono_literals;
+namespace chrono = std::chrono;
+namespace filesystem = std::filesystem;
 
+
+// This defines a base interface type that every async queue object must inherit from
+class IVisualWorkObject {
+public:
+	virtual int32_t GetCurrentObjectState() const = 0;
+
+};
+
+#pragma region Console mode interface
 class ConsoleModifier {
 public:
 	ConsoleModifier(
@@ -47,220 +58,35 @@ public:
 	HANDLE ConsoleHandle;
 	DWORD  PreviousConsoleMode;
 };
+#pragma endregion
 
+#pragma region Visual mode interface
 
-// Syntax rules for program options:
-// - We accept a argv/agrc style tokenized commandline as input (provided by main)
-// - The first entry always referrers to the invocation of this software (?.exe)
-// - Non annotated arguments are interpreted as a path (how they are used is unspecified)
-// - Arguments annotated with a single dash "-" are interpreted as flags:
-//   They can consist of a single case sensitive letter followed by an +/- to enable/disable
-//   said flag, or consist of flags followed by an +/- to enabled/disable all of them listed
-// - Arguments annotated with a double dash "--" are interpreted as long arguments:
-//   They can be interpreted as long names for flags (single annotated arguments),
-//   but cannot be an array of those.
-//   They can also represent a key-value pair that can be separated by a space, equal or colon
-//   (possibly also not be separated at all by anything, idk have to decide)
-// 
-class ProgramOptions {
+class VisualAppException
+	: public CommonExceptionType {
 public:
-	enum ArgumentType {
-		ARGUMENT_PURE,
-		ARGUMENT_FLAG,
-		ARGUMENT_UNSPECIFIED
+	enum ExceptionCode : UnderlyingType {
+		STATUS_FAILED_QUEUE_WORKITEM = -2000,
+		STATUS_CANNOT_FREE_IN_PROGRESS,
+		STATUS_FREED_UNREGISTERED_OBJ,
+
 	};
-	struct AcceptedArgument {
-		ArgumentType TypeOfArgument;
-		bool         ArgumentWasParsed;
 
-		char8_t     ShortArgumentForm;
-		std::string LongArgumentForm;
-		std::string ArgumentDescription;
-
-		std::variant<std::string,
-			bool> ArgumentValue;
-	};
-	using ArgumentList = std::vector<AcceptedArgument>;
-
-
-	void AddArgumentToList(
-		IN        ArgumentType      TypeOfArgument,
-		OPT       bool              DefaultFlagState,
-		OPT       char8_t           ShortForm,
-		OPT const std::string_view& LongForm,
-		OPT const std::string_view& Description
-	) {
-		TRACE_FUNCTION_PROTO;
-
-		AcceptedArgumentList.emplace_back(AcceptedArgument{
-			.TypeOfArgument = TypeOfArgument,
-			.ShortArgumentForm = ShortForm,
-			.LongArgumentForm = std::string(LongForm),
-			.ArgumentDescription = std::string(Description),
-			.ArgumentValue = DefaultFlagState
-			});
-	}
-
-	void ReparseArguments(
-		IN std::span<const char*> ArgumentVector
-	) {
+	VisualAppException(
+		IN const std::string_view& ExceptionText,
+		IN       ExceptionCode     StatusCode
+	)
+		: CommonExceptionType(ExceptionText,
+			StatusCode,
+			CommonExceptionType::EXCEPTION_VISUAL_APP) {
 		TRACE_FUNCTION_PROTO;
 	}
-
-private:
-	// TODO: Create function that exposes view of unspecified argument types 
-	// (unannotated arguments not part of key-value pairs)
-	class UnspecifiedArgumentFilterForView {
-	public:
-		bool operator()(
-			IN const AcceptedArgument& ListEntry
-			) {
-
-			return false;
-		}
-	};
-	template<ArgumentType TypeTag>
-	struct TypeEnum;
-	#define MAP_ENUM_TO_TYPE(Enum, Type) template<>\
-	struct TypeEnum<Enum> {\
-		using type = Type;\
-	}
-	MAP_ENUM_TO_TYPE(ARGUMENT_PURE, std::string);
-	MAP_ENUM_TO_TYPE(ARGUMENT_FLAG, bool);
-	#undef MAP_ENUM_TO_TYPE
-public:
-	template<ArgumentType TypeTag>
-	TypeEnum<TypeTag>::type GetPropertyByTemplateSpecification(
-		IN        char8_t           ShortFlagName,
-		OPT const std::string_view& OptionalLongName = {}
-	) {
-		using namespace std::placeholders;
-		TRACE_FUNCTION_PROTO;
-
-		auto FlagsIterator = std::find_if(AcceptedArgumentList.begin(),
-			AcceptedArgumentList.end(),
-			std::bind(FilterComparitorBindable<TypeTag>,
-				_1,
-				ShortFlagName,
-				OptionalLongName));
-		if (FlagsIterator == AcceptedArgumentList.end())
-			return false;
-
-		return std::get<TypeEnum<TypeTag>::type>(FlagsIterator->ArgumentValue);
-	}
-
-private:
-	template<ArgumentType TypeOfArgument>
-	static bool FilterComparitorBindable(
-		IN  ArgumentList::const_reference ListEntry,
-		IN        char8_t                 ShortFlagName,
-		OPT const std::string_view&       OptionalLongName
-	) {
-		TRACE_FUNCTION_PROTO;
-
-		if (ListEntry.TypeOfArgument != TypeOfArgument)
-			return false;
-		if (ShortFlagName)
-			return ListEntry.ShortArgumentForm == ShortFlagName;
-		if (!OptionalLongName.empty())
-			return ListEntry.LongArgumentForm.compare(OptionalLongName);
-		return false;
-	}
-
-
-
-	ArgumentList AcceptedArgumentList;
 };
-
-#if 0
-void legacy_context() {
-
-	// Primary processing closure
-	try {
-		StatisticsTracker ProfilerSummary(64ms);
-
-		const auto FileName = argv[1];
-		ImageHelp TargetImage(FileName);
-		TargetImage.MapImageIntoMemory();
-		TargetImage.RejectFileCloseHandles();
-		TargetImage.RelocateImageToMappedOrOverrideBase();
-
-		SymbolHelp SymbolServer(TargetImage,
-			"SRV*C:\\Symbols*https://msdl.microsoft.com/download/symbols");
-
-		CfgGenerator ControlFlowGraphGenerator(TargetImage,
-			IntelXedConfiguration);
-
-
-
-
-		// Enumerate all function entries here
-		auto RuntimeFunctionsView = TargetImage.GetRuntimeFunctionTable();
-		for (const RUNTIME_FUNCTION& RuntimeFunction : RuntimeFunctionsView) {
-
-			// Generate Cfg from function
-
-			// Tests
-			// auto FunctionAddres = SymbolServer.FindFunctionFrameByName("StubTestFunction2");
-			// auto GraphForFunction = ControlFlowGraphGenerator.GenerateCfgFromFunction2(
-			// 	FunctionAddres);
-			// auto InvalidXRefs = GraphForFunction.ValidateCfgOverCrossReferences();
-			// __debugbreak();
-
-			try {
-
-				auto GraphForRuntimeFunction = ControlFlowGraphGenerator.GenerateCfgFromFunction2(
-					FunctionAddress(
-						RuntimeFunction.BeginAddress + TargetImage.GetImageFileMapping(),
-						RuntimeFunction.EndAddress - RuntimeFunction.BeginAddress));
-				auto Failures = GraphForRuntimeFunction.ValidateCfgOverCrossReferences();
-				if (Failures) {
-
-					__debugbreak();
-
-				}
-			}
-			catch (const CfgToolException& GraphException) {
-
-				SPDLOG_ERROR("Graph generation failed failed with [{}] : \"{}\", skipping frame",
-					GraphException.StatusCode,
-					GraphException.ExceptionText);
-
-				// if (IsDebuggerPresent())
-				// 	__debugbreak();
-			}
-
-
-		}
-
-
-
-		// Discard changes for now
-		TargetImage.RejectAndDiscardFileChanges();
-	}
-	catch (const ImageHelpException& MapperException) {
-
-		SPDLOG_ERROR("ImageHelp failed with [{}] : \"{}\"",
-			MapperException.StatusCode,
-			MapperException.ExceptionText);
-		return STATUS_FAILED_IMAGEHELP;
-	}
-	catch (const std::exception& ExceptionInformation) {
-
-		SPDLOG_ERROR("Primary execution failed with standard exception: {}",
-			ExceptionInformation.what());
-		return STATUS_FAILED_PROCESSING;
-	}
-
-
-}
-
-
-#endif
 
 
 #pragma region COM OpenFileDialog
 // Highly inefficient and horribly ugly shitty code, but its user driven anyways...
+// TODO: Exchange some stuff here for std::filesystem
 struct OpenFileDialogConfig {
 	bool        ClearClientData = false;
 	std::string DefaultExtension;	
@@ -280,15 +106,6 @@ struct OpenFileDialogConfig {
 	uint32_t    RemoveFlagsMask;
 	uint32_t    AddFlagsMask;
 	std::string DialogTitle;
-
-	static std::unique_ptr<OpenFileDialogConfig> AllocateFileDialogConfig() {
-		TRACE_FUNCTION_PROTO;
-		struct EnableMakeUnique : public OpenFileDialogConfig {};
-		return std::make_unique<EnableMakeUnique>();
-	} 
-
-private:
-	OpenFileDialogConfig() = default;
 };
 
 std::string ComOpenFileDialogWithConfig(
@@ -397,13 +214,134 @@ std::string ComOpenFileDialogWithConfig(
 }
 #pragma endregion
 
+class VisualOpenFileObject 
+	: public IVisualWorkObject,
+	  public OpenFileDialogConfig {
+	friend class VisualSingularityApp;
+public:
+	enum CurrentOpenState {
+		STATE_CANCELED = -2000,
+		STATE_ERROR,
+
+		STATE_SCHEDULED = 0,
+		STATE_OPENING,
+		STATE_DIALOG_DONE,
+	};
+
+	VisualOpenFileObject(
+		IN const OpenFileDialogConfig& FileDialogConfig
+	) 
+		: OpenFileDialogConfig(FileDialogConfig) {
+		TRACE_FUNCTION_PROTO;
+	}
+
+	VisualOpenFileObject(IN const VisualOpenFileObject&) = delete;
+	VisualOpenFileObject& operator=(IN const VisualOpenFileObject&) = delete;
+
+	std::underlying_type_t<CurrentOpenState>
+	GetCurrentObjectState() const override {
+		TRACE_FUNCTION_PROTO; return OpenDlgState;
+	}
+	std::string_view GetResultString() const {
+		TRACE_FUNCTION_PROTO; 
+		OpenFileResult.c_str(); // ensure null terminator
+		return OpenFileResult;
+	}
+
+private:
+	// The result string is not protected by any lock, 
+	// it assumes that it will be set by the worker 
+	// and will be only be read by multiple threads if at all
+	std::string OpenFileResult;
+	std::atomic<CurrentOpenState> OpenDlgState;
+};
+
+class VisualLoadImageObject 
+	: public IVisualWorkObject {
+	friend class VisualSingularityApp;
+public:
+	enum CurrentLoadState {
+		STATE_ABORTED = -2000,
+		STATE_ERROR,
+
+		STATE_SCHEDULED = 0,
+		STATE_LOADING_MEMORY,
+		STATE_LAODING_SYMBOLS,
+		STATE_RELOCATING,
+		STATE_FULLY_LOADED,
+	};
+
+	VisualLoadImageObject(
+		IN  filesystem::path     ImageFileName,
+		IN              bool     ForceDisableSymbols = false,
+		IN  filesystem::path     PdbFileName = {},
+		OPT IImageLoaderTracker* ExternTracker = nullptr)
+		: ImageFile(ImageFileName),
+		  PdbFile(PdbFileName),
+		  InfoTracker(ExternTracker),
+		  DisableSymbolServer(ForceDisableSymbols) {
+		TRACE_FUNCTION_PROTO;
+	}
+	
+	// Disallow copying of this object, the object must be moved,
+	// as this has strict ownership semantics due to multi threading badness
+	VisualLoadImageObject(IN const VisualLoadImageObject&) = delete;
+	VisualLoadImageObject& operator=(IN const VisualLoadImageObject&) = delete;
+	VisualLoadImageObject(IN VisualLoadImageObject&& Other) {
+		TRACE_FUNCTION_PROTO; *this = std::move(Other);
+	}
+	VisualLoadImageObject& operator=(IN VisualLoadImageObject&& Other) {
+		TRACE_FUNCTION_PROTO;
+		ExitExceptionCopy = std::move(Other.ExitExceptionCopy);
+		ImageLoadState.store(Other.ImageLoadState);
+		NumberOfPolyX.store(Other.NumberOfPolyX);
+		InfoTracker = Other.InfoTracker;
+		ImageFile = std::move(Other.ImageFile);
+		PdbFile = std::move(Other.PdbFile);
+		DisableSymbolServer = Other.DisableSymbolServer;
+		return *this;
+	}
+
+
+	std::underlying_type_t<CurrentLoadState>
+	GetCurrentObjectState() const override {
+		TRACE_FUNCTION_PROTO; return ImageLoadState;
+	}
+	uint32_t GetPolyXNumber() const {
+		TRACE_FUNCTION_PROTO; return NumberOfPolyX;
+	}
+	CommonExceptionType* GetExceptionReport() const {
+		TRACE_FUNCTION_PROTO; return ExitExceptionCopy.get();
+	}
+
+	void AbortImageLoadAsync() const { // This schedules an abort by overriding the state of this object
+									   // The abort is handled by throwing an abort exception from the tracker interface
+		TRACE_FUNCTION_PROTO; 
+		ImageLoadState = STATE_ABORTED;
+		SPDLOG_WARN("Scheduled abort on remote thread, cleaning up asap");
+	}
+
+private:
+	std::unique_ptr<CommonExceptionType>  ExitExceptionCopy; // under some states this maybe valid and contains exact information
+															 // as to why the load could have failed
+	mutable std::atomic<CurrentLoadState> ImageLoadState;    // Describes the current load state
+	std::atomic<uint32_t>                 NumberOfPolyX;     // STATE_LOADING_MEMORY: NumberOfSections in image
+															 // STATE_RELOCATING:     NumberOfRelocations in image
+
+	IImageLoaderTracker* InfoTracker;
+	filesystem::path     ImageFile;
+	filesystem::path     PdbFile;
+				bool     DisableSymbolServer;
+};
+
+
+
 
 class VisualSingularityApp {
 public:
 	enum ControlRequest {
 		CWI_OPEN_FILE,
 		CWI_LOAD_FILE,
-		CWI_LOAD_SYMBOLS,
 		CWI_DO_PROCESSING_FINAL
 	};
 	struct QueueWorkItem {
@@ -414,78 +352,109 @@ public:
 		bool           WorkItemhandled;
 		uint32_t       StatusResult;
 
-		// Special case context data, this struct is incredibly inefficient but whatever
-		std::string FilePathResultOrDesiredPath;
-		
-		std::unique_ptr<OpenFileDialogConfig> PossibleOpenDialogConfig;
-
+		IVisualWorkObject* WorkingObject;
 	};
 
 	VisualSingularityApp(
 		IN uint32_t NumberOfThreads
 	) {
 		TRACE_FUNCTION_PROTO;
-
 		InitializeThreadpoolEnvironment(&ThreadPoolEnvironment);
-
+		SPDLOG_INFO("Initilialized thread pool for async work");
 	}
 
 
-	token_t QueueOpenFileRequestDialogWithTag(                // Open a IFileOpenDialog interface,
-		                                                      // the result can later be retrieved using the returned token
-		IN std::unique_ptr<OpenFileDialogConfig> DialogConfig // A pointer to holding the DialogConfig
+	const VisualOpenFileObject* QueueOpenFileRequestDialogWithTag( // Open a IFileOpenDialog interface,
+																   // the result can later be retrieved using the returned token
+		IN const OpenFileDialogConfig& DialogConfig                // Move in the Dialog Object
 	) {
 		TRACE_FUNCTION_PROTO;
 
 		const std::lock_guard Lock(ThreadPoolLock);
 		auto TokenForRequest = GenerateGlobalUniqueTokenId();
-		auto& WorkEntry = WorkResponseList.emplace_back(QueueWorkItem{
+		auto& WorkItemEntry = WorkResponseList.emplace_back(QueueWorkItem{
 			.OwnerController = this,
 			.ObjectToken = TokenForRequest,
 			.ControlCommand = CWI_OPEN_FILE,
-			.PossibleOpenDialogConfig = std::move(DialogConfig) });
-		
-		auto Status = TrySubmitThreadpoolCallback(WorkQueueDisptachThread,
-			static_cast<void*>(&WorkEntry),
-			&ThreadPoolEnvironment);
-		if (!Status) {
-		
-			WorkResponseList.pop_back();
-			throw std::runtime_error("failed to post work to queue");
-		}
-
-		return TokenForRequest;
+			.WorkingObject = new VisualOpenFileObject(DialogConfig) });
+		QueueEnlistWorkItem(&WorkItemEntry);
+		return static_cast<VisualOpenFileObject*>(WorkItemEntry.WorkingObject);
 	}
-
-	bool QueueCheckoutTokenDialogResult(
-		IN  token_t      MatchableToken,
-		OUT std::string& ResultString
+	const VisualLoadImageObject* QueueLoadImageRequestWithTracker( // Schedules a load operation on the working threadpool
+																   // and returns the schedules request by pointer,
+																   // the returned object contains up to date information about the loading procedure
+		IN VisualLoadImageObject&& LoadImageInformation            // The information used to try to schedule the image
 	) {
 		TRACE_FUNCTION_PROTO;
 
-		// Lock list and search for token / property match
+	
 		const std::lock_guard Lock(ThreadPoolLock);
-		auto SearchIterator = std::find_if(WorkResponseList.begin(),
-			WorkResponseList.end(),
-			[MatchableToken](
-				IN const QueueWorkItem& QueueEntry
-				) -> bool {
-					TRACE_FUNCTION_PROTO;
-					return QueueEntry.ControlCommand == CWI_OPEN_FILE
-						&& QueueEntry.ObjectToken == MatchableToken
-						&& QueueEntry.WorkItemhandled;
-			});
-		if (SearchIterator == WorkResponseList.end())
-			return false;
-
-		// Found entry, get the content and remove entry from que
-		ResultString = std::move(SearchIterator->FilePathResultOrDesiredPath);
-		WorkResponseList.erase(SearchIterator);
-		return true;
+		auto TokenForRequest = GenerateGlobalUniqueTokenId();
+		auto& WorkItemEntry = WorkResponseList.emplace_back(QueueWorkItem{
+			.OwnerController = this,
+			.ObjectToken = TokenForRequest,
+			.ControlCommand = CWI_LOAD_FILE,
+			.WorkingObject = new VisualLoadImageObject(
+				std::move(LoadImageInformation)) });
+		QueueEnlistWorkItem(&WorkItemEntry);
+		return static_cast<VisualLoadImageObject*>(WorkItemEntry.WorkingObject);
 	}
 
+	void FreeWorkItemFromPool(
+		IN const IVisualWorkObject* WorkItemEntry
+	) {
+		TRACE_FUNCTION_PROTO;
+
+		// Locate work item in pool, if not found or not completed throw error
+		const std::lock_guard Lock(ThreadPoolLock);
+		auto DequeEntry = std::find_if(WorkResponseList.begin(),
+			WorkResponseList.end(),
+			[WorkItemEntry](
+				IN const QueueWorkItem& WorkItem
+				) -> bool {
+					TRACE_FUNCTION_PROTO;
+
+					if (WorkItem.WorkingObject == WorkItemEntry) {
+
+						// Found deque item for object
+						if (WorkItem.WorkItemhandled)
+							return true;
+
+						throw VisualAppException("Tried to free in progress object, illegal",
+							VisualAppException::STATUS_CANNOT_FREE_IN_PROGRESS);
+					}
+
+					return false;
+			});
+		if (DequeEntry == WorkResponseList.end())
+			throw VisualAppException("Tried to free unregistered object from pool",
+				VisualAppException::STATUS_FREED_UNREGISTERED_OBJ);
+		WorkResponseList.erase(DequeEntry);
+		SPDLOG_INFO("Freed workitem from working pool");
+	}
+
+	static void DispatchAbortCheck() { // TODO: implement
+		TRACE_FUNCTION_PROTO;
+	}
 
 private:
+	void QueueEnlistWorkItem(
+		IN QueueWorkItem* WorkItem
+	) {
+		TRACE_FUNCTION_PROTO;
+
+		auto Status = TrySubmitThreadpoolCallback(
+			WorkQueueDisptachThread,
+			static_cast<void*>(WorkItem),
+			&ThreadPoolEnvironment);
+		if (!Status) {
+
+			WorkResponseList.pop_back();
+			throw VisualAppException("Failed to enlist a work queue item on the thread pool",
+				VisualAppException::STATUS_FAILED_QUEUE_WORKITEM);
+		}
+	}
+
 	static void WorkQueueDisptachThread(
 		IN    PTP_CALLBACK_INSTANCE CallbackInstance,
 		INOUT void*                 UserContext
@@ -493,45 +462,144 @@ private:
 		TRACE_FUNCTION_PROTO;
 
 		auto WorkObject = static_cast<QueueWorkItem*>(UserContext);
-
 		switch (WorkObject->ControlCommand) {
 		case CWI_OPEN_FILE: {
+
+			auto OpenObject = static_cast<VisualOpenFileObject*>(WorkObject->WorkingObject);
+			OpenObject->OpenDlgState = VisualOpenFileObject::STATE_OPENING;
 
 			auto Status = CallbackMayRunLong(CallbackInstance);
 			if (!Status)
 				SPDLOG_WARN("Long running function in quick threadpool, failed to created dedicated thread");
-			WorkObject->FilePathResultOrDesiredPath = ComOpenFileDialogWithConfig(*WorkObject->PossibleOpenDialogConfig);
+			OpenObject->OpenFileResult = ComOpenFileDialogWithConfig(
+				*static_cast<OpenFileDialogConfig*>(OpenObject));
+
+			if (OpenObject->OpenFileResult.empty()) {
+
+				OpenObject->OpenDlgState = VisualOpenFileObject::STATE_CANCELED;
+				SPDLOG_WARN("The user selected to cancel the file selection prompt");
+				break;
+			}
+
+			OpenObject->OpenDlgState = VisualOpenFileObject::STATE_DIALOG_DONE;
 			SPDLOG_INFO("User selected \"{}\", for image",
-				WorkObject->FilePathResultOrDesiredPath);
-			
-			WorkObject->WorkItemhandled = true;
+				OpenObject->OpenFileResult);
 			break;
 		}
-		case CWI_LOAD_FILE:
+		case CWI_LOAD_FILE: {
+
+			auto LoadObject = static_cast<VisualLoadImageObject*>(WorkObject->WorkingObject);
+			LoadObject->ImageLoadState = VisualLoadImageObject::STATE_LOADING_MEMORY;
+
+			auto Status = CallbackMayRunLong(CallbackInstance);
+			if (!Status)
+				SPDLOG_WARN("Long running function in quick threadpool, failed to created dedicated thread");
+
+			// Try to load the image, the path is assumed to be checked before passing,
+			// ImageLoader will "check" it regardless, as in not being able to open it.
+			auto& TargetImage = WorkObject->OwnerController->TargetImage;
+			auto& SymbolServer = WorkObject->OwnerController->SymbolServer;
+			try {
+				TargetImage = std::make_unique<ImageHelp>(LoadObject->ImageFile.string());
+				TargetImage->MapImageIntoMemory();
+
+				// Check if we can try to load symbols
+				if (!LoadObject->DisableSymbolServer) {
+
+					// Decide how to load the pdb dependent on how the path is set
+					LoadObject->ImageLoadState = VisualLoadImageObject::STATE_LAODING_SYMBOLS;
+					TargetImage->RejectFileCloseHandles();
+					if (!LoadObject->PdbFile.empty()) {
+
+						SymbolServer = std::make_unique<SymbolHelp>(
+							LoadObject->PdbFile.string());
+						SymbolServer->InstallPdbFileMappingVirtualAddress(
+							TargetImage->GetImageFileMapping());
+					}
+					else
+						SymbolServer = std::make_unique<SymbolHelp>(
+							*static_cast<IImageLoaderHelp*>(TargetImage.get()));
+				}
+
+				// Relocate Image in memory
+				LoadObject->ImageLoadState = VisualLoadImageObject::STATE_RELOCATING;
+				LoadObject->InfoTracker->SetApproximatedRelocCount(
+					TargetImage->ApproximateNumberOfRelocationsInImage());
+				TargetImage->RelocateImageToMappedOrOverrideBase();
+
+				LoadObject->ImageLoadState = VisualLoadImageObject::STATE_FULLY_LOADED;
+			}
+			catch (const CommonExceptionType& ExceptionInforamtion) {
+
+				switch (ExceptionInforamtion.ExceptionTag) {
+				case CommonExceptionType::EXCEPTION_IMAGE_HELP:
+					LoadObject->ImageLoadState = VisualLoadImageObject::STATE_ERROR;
+					SPDLOG_ERROR("The image load failed due to [{}]: \"{}\"",
+						ExceptionInforamtion.StatusCode,
+						ExceptionInforamtion.ExceptionText);
+					break;
+					
+				case CommonExceptionType::EXCEPTION_COMOLE_EXP:
+					LoadObject->ImageLoadState = VisualLoadImageObject::STATE_ERROR;
+					break;
+
+				case CommonExceptionType::EXCEPTION_VISUAL_APP:
+					LoadObject->ImageLoadState = VisualLoadImageObject::STATE_ABORTED;
+					SPDLOG_WARN("the current ongiung op was aborted by callback");
+					break;
+
+				default:
+					__fastfail(-247628); // TODO: Temporary will be fixed soon
+				}
+
+				// Do cleanup
+				SymbolServer.release();
+				TargetImage.release();
+			}
 			break;
-		case CWI_LOAD_SYMBOLS:
-			break;
+		}
+
 		case CWI_DO_PROCESSING_FINAL:
 			break;
+		}
+
+		WorkObject->WorkItemhandled = true;
+	}
+
+	std::deque<QueueWorkItem>   WorkResponseList;
+	std::mutex                  ThreadPoolLock;
+	TP_CALLBACK_ENVIRON         ThreadPoolEnvironment{};
+
+	std::unique_ptr<ImageHelp>  TargetImage;
+	std::unique_ptr<SymbolHelp> SymbolServer;
+};
+#pragma endregion
 
 
-		default:
+
+class VisualTrackerApp 
+	: public IImageLoaderTracker {
+public:
+
+	void UpdateTrackerOrAbortCheck(
+		IN TrackerInfoTag TrackerType
+	) {
+		TRACE_FUNCTION_PROTO;
+
+		switch (TrackerType)
+		{
+		case TrackerInfoTag::TRACKER_UPDATE_RELOCS:
+			++RelocsApplied;
 			break;
 		}
 
+		// Check abort flag
+		// TODO: implement
 	}
 
-	std::deque<QueueWorkItem> WorkResponseList;
-	std::mutex                ThreadPoolLock;
-	TP_CALLBACK_ENVIRON       ThreadPoolEnvironment{};
-
-
-	ImageHelp*    TargetImage = nullptr;
-	SymbolHelp*   SymbolServer = nullptr;
-	CfgGenerator* CfgGenContext = nullptr;
+	uint32_t              ApproximatedRelocs = 0;
+	std::atomic<uint32_t> RelocsApplied = 0;
 };
-
-
 
 
 void GlfwErrorHandlerCallback(
@@ -553,7 +621,6 @@ enum EntryPointReturn : int32_t {
 	STATUS_FAILED_CFGTOOLS,
 
 	STATUS_SUCCESS = 0,
-
 };
 export int32_t main(
 		  int   argc,
@@ -667,116 +734,194 @@ export int32_t main(
 		ImGui_ImplOpenGL3_NewFrame();
 		ImGui_ImplGlfw_NewFrame();
 		ImGui::NewFrame();
-
-
+		ImGui::DockSpaceOverViewport();
 
 		// 1. Show the big demo window (Most of the sample code is in ImGui::ShowDemoWindow()! You can browse its code to learn more about Dear ImGui!).
 		if (show_demo_window)
 			ImGui::ShowDemoWindow(&show_demo_window);
 
-
 		// 2. Primary Controller window, shows statistics and
 		ImGui::Begin("GeneralProgress tracker");                          // Create a window called "Hello, world!" and append into it.
 		{
+			static enum FileSelectionState {
+				STATE_LOCKED,
+				STATE_NONE,
+				STATE_WAITING_IMAGE,
+				STATE_WAITING_PDB,
+				STATE_LOADING,
+
+			} ProgramState = STATE_NONE;
+			static VisualTrackerApp SofTrackerObject{};
+			static const VisualLoadImageObject* LoaderObjectState = nullptr;
 
 			// File selection header 
 			static char InputFilePath[MAX_PATH]{};
 			static char PathToPdb[MAX_PATH]{};
 			static char OutputPath[MAX_PATH]{};
 			{
-				static enum FileSelectionState {
-					STATE_NONE,
-					STATE_LOCKED,
-
-					STATE_WAITING_IMAGE,
-					STATE_WAITING_PDB,
-					STATE_WAiTING_OUT,
-				} SelectionState = STATE_NONE;
-				static token_t LastRequestToken = 0;
+				static const VisualOpenFileObject* LastFileOpenDialog = nullptr;
+				static bool EnableLastErrorMessage = false;
+				static std::string LastErrorMessage{};
+				static ImVec4 LastErrorColor{};
 
 				// Check if we are currently waiting for a file selection by user
-				if (SelectionState >= STATE_WAITING_IMAGE) {
+				switch (ProgramState) {
+				case STATE_WAITING_IMAGE:
+				case STATE_WAITING_PDB:
 
-					std::string SelectedFileRetainer;
-					auto Status = SingularityApiController.QueueCheckoutTokenDialogResult(LastRequestToken,
-						SelectedFileRetainer);
-					if (Status) {
-						
-						if (SelectedFileRetainer.size())
-							strcpy(std::array{ InputFilePath, PathToPdb, OutputPath }
-								[SelectionState - STATE_WAITING_IMAGE],
-								SelectedFileRetainer.c_str());
+					// Handle last requested IFileOpenDialog
+					switch (LastFileOpenDialog->GetCurrentObjectState()) {
+					case VisualOpenFileObject::STATE_ERROR:
+						LastErrorColor = ImVec4(1, 0, 0, 1);
+						LastErrorMessage = "Com interface failed to select file";	
+						break;
 
-						SelectionState = STATE_NONE;
+					case VisualOpenFileObject::STATE_DIALOG_DONE:
+
+						if (!LastFileOpenDialog->GetResultString().empty())
+							strcpy(std::array{ InputFilePath, PathToPdb }
+								[ProgramState - STATE_WAITING_IMAGE],
+								LastFileOpenDialog->GetResultString().data());
+					}
+					if (LastFileOpenDialog->GetCurrentObjectState() < 0 ||
+						LastFileOpenDialog->GetCurrentObjectState() == 
+						VisualOpenFileObject::STATE_DIALOG_DONE) {
+
+						SingularityApiController.FreeWorkItemFromPool(LastFileOpenDialog);
+						LastFileOpenDialog = nullptr;
+						ProgramState = STATE_NONE;
+					}
+					break;
+
+				case STATE_LOADING:
+
+					// Check processing state for errors and reset
+					switch (LoaderObjectState->GetCurrentObjectState()) {
+					case VisualLoadImageObject::STATE_ABORTED:
+						LastErrorColor = ImVec4(1, 1, 0, 1);
+						break;
+					case VisualLoadImageObject::STATE_ERROR:
+						LastErrorColor = ImVec4(1, 0, 0, 1);
+					}
+					if (LoaderObjectState->GetCurrentObjectState() < 0) {
+
+						LastErrorMessage = LoaderObjectState->GetExceptionReport()->ExceptionText;
+						ProgramState = STATE_NONE;
+						SingularityApiController.FreeWorkItemFromPool(LoaderObjectState);
+						LoaderObjectState = nullptr;
 					}
 				}
 
 				// Image load text input line
-				ImGui::BeginDisabled(SelectionState != STATE_NONE);
-				ImGui::InputTextWithHint("Input-File", "Executable image to load...",
+				ImGui::BeginDisabled(ProgramState != STATE_NONE);
+				ImGui::InputTextWithHint("##InputFile", "Executable image to load...",
 					InputFilePath, MAX_PATH);
 				ImGui::SameLine();
-				if (ImGui::Button("...")) {
+				if (ImGui::Button("...##ImageSelect")) {
 
-					auto ConfigRetainer = OpenFileDialogConfig::AllocateFileDialogConfig();
-					// ConfigRetainer->FileNameLabel = ""
-					ConfigRetainer->ButtonText = "Select executable";
+					OpenFileDialogConfig ConfigRetainer{};
+					ConfigRetainer.DefaultExtension = ".exe;.dll;.sys";
+					ConfigRetainer.FileNameLabel = "PE-COFF executable image:";
+					ConfigRetainer.FileFilters = {
+						{ "PE-COFF", "*.exe;*.dll;*.sys" },
+						{ "PE-COFF2", "*.bin;*.scr"},
+						{ "Any file", "*.*" } };
+					ConfigRetainer.DefaultTypeIndex = 1;
+					ConfigRetainer.ButtonText = "Select Executable";
 
-					LastRequestToken = SingularityApiController.QueueOpenFileRequestDialogWithTag(
+					LastFileOpenDialog = SingularityApiController.QueueOpenFileRequestDialogWithTag(
 						std::move(ConfigRetainer));
-					SelectionState = STATE_WAITING_IMAGE;
+					ProgramState = STATE_WAITING_IMAGE;
 				}
+				ImGui::SameLine();
+				ImGui::Text("Input-File");
 
-				// image load provide pdb or override
+				// Image load provide pdb or override
 				static bool LoadWithPdb = true;
-				if (LoadWithPdb) {
+				ImGui::BeginDisabled(!LoadWithPdb);
+				ImGui::InputTextWithHint("##PdbFile", "PDB to load... (keep this empty to locate pdb)",
+					PathToPdb, MAX_PATH);
+				ImGui::SameLine();
+				if (ImGui::Button("...##PdbSelect")) {
 
-					ImGui::InputTextWithHint("PDB-File", "PDB to load... (keep this empty to locate pdb)",
-						PathToPdb, MAX_PATH);
-					ImGui::SameLine();
-					if (ImGui::Button("..")) {
+					OpenFileDialogConfig ConfigRetainer{};
+					ConfigRetainer.DefaultExtension = ".pdb";
+					ConfigRetainer.DefaultSelection = filesystem::path(InputFilePath).replace_extension(".pdb").filename().string();
+					ConfigRetainer.FileNameLabel = "Program database file:";
+					ConfigRetainer.FileFilters = {
+						{ "Symbols", "*.pdb" },
+						{ "Any file", "*.*" } };
+					ConfigRetainer.DefaultTypeIndex = 1;
+					ConfigRetainer.ButtonText = "Select PDB";
 
-						auto ConfigRetainer = OpenFileDialogConfig::AllocateFileDialogConfig();
-						// ConfigRetainer->FileNameLabel = ""
-						ConfigRetainer->ButtonText = "Select executable";
+					filesystem::path InputFilePath2(InputFilePath);
+					ConfigRetainer.DialogTitle = InputFilePath2.empty() ? "Select program database file to load"
+						: fmt::format("Select program database file to load for \"{}\"",
+							InputFilePath2.filename().string());
 
-						LastRequestToken = SingularityApiController.QueueOpenFileRequestDialogWithTag(
-							std::move(ConfigRetainer));
-						SelectionState = STATE_WAITING_PDB;
-					}
+					LastFileOpenDialog = SingularityApiController.QueueOpenFileRequestDialogWithTag(
+						std::move(ConfigRetainer));
+					ProgramState = STATE_WAITING_PDB;
 				}
+				ImGui::SameLine();
+				ImGui::Text("PDB-File");
+				ImGui::EndDisabled();
 
 				// Provide target output path
-				ImGui::InputTextWithHint("Target", "Optional Filename to store the file as...",
+				ImGui::InputTextWithHint("##TargetFile", "Optional Filename to store the file as...",
 					OutputPath, MAX_PATH);
+				ImGui::SameLine();
+				if (ImGui::Button("Gen")) {
+
+					// Generate a suitable path name from input path
+					// TODO: optimize this and deuglify
+					filesystem::path InputFilePath2(InputFilePath);
+					InputFilePath2.replace_filename(
+						InputFilePath2.stem().string().append(
+							"-Mutated").append(
+								InputFilePath2.extension().string()));
+					strcpy(OutputPath, InputFilePath2.string().c_str());
+				}
+				ImGui::SameLine();
+				ImGui::Text("Target");
+
+				// Draw small config and load button, including logic
 				ImGui::Checkbox("Load with Symbols", &LoadWithPdb);
 				ImGui::SameLine();
-				if (ImGui::Button("Load Image")) {
+				if (ImGui::Button("Load Image###LoadImageTrigger")) {
 
-					SelectionState = STATE_WAiTING_OUT;
+					// Load image here
+					VisualLoadImageObject LoaderObject(
+						InputFilePath,
+						!LoadWithPdb,
+						PathToPdb,
+						&SofTrackerObject);
+					LoaderObjectState = SingularityApiController.QueueLoadImageRequestWithTracker(
+						std::move(LoaderObject));
+					ProgramState = STATE_LOADING;
 				}
 				ImGui::EndDisabled();
+
+				if (EnableLastErrorMessage)
+					ImGui::TextColored(LastErrorColor, LastErrorMessage.c_str());
 			}
-
-
 			ImGui::Separator();
 
+			// The progress section, a quick lookup for some data while doing things
+			{
+				static float GlobalProgress = 0.0f;
+				static float SubFrameProgress = 0.0f;
 
+				// File Input output selection
+				ImGui::ProgressBar(GlobalProgress);
+				ImGui::SameLine();
+				ImGui::Text("GlobalProgress");
 
-			static float GlobalProgress = 0.0f;
-			static float SubFrameProgress = 0.0f;
-			
-			// File Input output selection
-			ImGui::ProgressBar(GlobalProgress);
-			ImGui::SameLine();
-			ImGui::Text("GlobalProgress");
-
-			ImGui::ProgressBar(SubFrameProgress);
-			ImGui::SameLine();
-			ImGui::Text("SubFrame");
-
-
-			
+				ImGui::ProgressBar(SubFrameProgress);
+				ImGui::SameLine();
+				ImGui::Text("SubFrame");
+			}
+			ImGui::Separator();
 
 			ImGui::Checkbox("Enable DemoWindow", &show_demo_window);
 			ImGui::Text("Application average %.3f ms/frame (%.1f FPS)",

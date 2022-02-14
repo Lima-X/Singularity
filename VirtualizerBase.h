@@ -203,6 +203,7 @@ public:
 		EXCEPTION_IMAGE_HELP,
 		EXCEPTION_CFG_TOOLSET,
 		EXCEPTION_COMOLE_EXP,
+		EXCEPTION_VISUAL_APP,
 	};
 
 	CommonExceptionType(
@@ -231,6 +232,8 @@ inline UnicodeString ConvertAnsiToUnicode(
 ) {
 	TRACE_FUNCTION_PROTO;
 
+	if (AnsiToUnicodeString.empty())
+		return {};
 	auto RequiredBufferSize = MultiByteToWideChar(CP_UTF8, 0,
 		AnsiToUnicodeString.data(),
 		static_cast<int32_t>(AnsiToUnicodeString.size()),
@@ -250,7 +253,8 @@ inline std::string ConvertUnicodeToAnsi(
 	IN const UnicodeView& UnicodeToAnsiString
 ) {
 	TRACE_FUNCTION_PROTO;
-
+	if (UnicodeToAnsiString.empty())
+		return {};
 	auto RequiredBufferSize = WideCharToMultiByte(CP_UTF8, 0,
 		UnicodeToAnsiString.data(),
 		static_cast<int32_t>(UnicodeToAnsiString.size()),

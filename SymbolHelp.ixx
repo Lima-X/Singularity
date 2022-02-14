@@ -39,7 +39,7 @@ public:
 export class SymbolHelp {
 public:
 	SymbolHelp(
-		IN const IImageHelper& ImageHelpInterface,
+		IN const IImageLoaderHelp& ImageHelpInterface,
 		IN const std::string_view& PdbSearchPath = {}
 	)
 		: SymbolHelp(ImageHelpInterface.GetImageFileName(),
@@ -68,6 +68,7 @@ public:
 
 			// Failed to open file, possibly not a PDB, try to open it as an executable image?
 			// The path was not a pdb ?, try to load it as an executable			
+			
 			auto PdbSearchPath2 = ConvertAnsiToUnicode(PdbSearchPath);
 			ComResult = DiaSource->loadDataForExe(PdbExeFileName2.c_str(),
 				PdbSearchPath2.empty() ? nullptr : PdbSearchPath2.c_str(),

@@ -30,7 +30,7 @@ msbuild .\Singularity\Singularity.sln -p:Configuration=Release
 - [ ] `jmp remote` : tail function call, interpret as exit point
 - [ ] `push ?; ret` : emulated call, interpret as call instead of ret (HIGH RISK FACTOR)\
       edit: will not be supported, simply doesnt add value to the framework as clean code is expected
-- [ ] `IDAD` : impossible disassembly detection\
+- [x] `IDAD` : impossible disassembly detection\
       Detects if there are defects such as overlaying instructions within the code of a frame
 
 ## Limitations and requirements

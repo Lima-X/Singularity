@@ -32,6 +32,7 @@ public:
 		STATUS_HANDLE_ALREADY_REJECTED,
 		STATUS_IMAGE_ALREADY_MAPPED,
 		STATUS_ALREADY_UNMAPPED_VIEW,
+		STATUS_ABORTED_BY_ITRACKER,
 
 		STATUS_INVALID_STATUS = 0
 	};
@@ -48,13 +49,45 @@ public:
 };
 
 
-// Interface for getting the base functionality in order to avoid crtp-plugin type issues
-export class IImageHelper {
+// Interface for getting the base functionality in order to avoid crtp-plugin type issues,
+// this also includes interfaces, to provide functionality and track data
+export class IImageLoaderHelp {
 public:
 
 	virtual byte_t* GetImageFileMapping() const = 0;
 
 	virtual std::string_view GetImageFileName() const = 0;
+};
+export class IImageLoaderTracker {
+public:
+	enum TrackerInfoTag {
+		TRACKER_UPDATE_SECTIONS,
+		TRACKER_UPDATE_RELOCS,
+
+		TRACKER_CHECK_ABORT, // additional virtual tracker that is called before entering any big function to directly handle aborts
+	};
+
+
+	virtual void SetApproximatedRelocCount(
+		IN uint32_t Approximation
+	) {
+		TRACE_FUNCTION_PROTO;
+	}
+
+	virtual void SetAddressOfInterest(
+		IN byte_t* VirtualAddress,
+		IN size_t* SizeOfInterest
+	) {
+		TRACE_FUNCTION_PROTO;
+	}
+
+	virtual void UpdateTrackerOrAbortCheck( // notifies to increment the following tracker counter,
+		                                    // or is used to check for an abort signal,
+		                                    // to abort any function in this interface is allowed to throw an exception of any type
+		IN TrackerInfoTag TrackerType
+	) {
+		TRACE_FUNCTION_PROTO;
+	}
 };
 
 
@@ -135,7 +168,7 @@ private:
 export template<template<class> class... T>
 class ImageLoader : 
 	public T<ImageLoader<T...>>...,
-	public IImageHelper {
+	public IImageLoaderHelp {
 
 	enum ImageHelpWorkState {
 		IMAGEHELP_REFUSE = -2000, // A post detection found an issue with the object,
@@ -799,14 +832,14 @@ public:
 		                                                     // by taking the average of the higher and lower bounds.
 		TRACE_FUNCTION_PROTO;
 
-		T& Underlying = this->GetUnderlyingCrtpBase();
+		const T& Underlying = this->GetUnderlyingCrtpBase();
 		auto& RelocationDirectory = Underlying.GetCoffMemberByTemplateId<T::GET_DATA_DIRECTORIES>(
 			)[IMAGE_DIRECTORY_ENTRY_BASERELOC];
 		uint32_t MaxNumberOfRelocations = RelocationDirectory.Size / 2;
 
 		auto SectionHeaders = Underlying.GetCoffMemberByTemplateId<T::GET_SECTION_HEADERS>();
 		auto SizeOfPrimaryImage = SectionHeaders.back().VirtualAddress +
-			SectionHeaders.back().Size -
+			SectionHeaders.back().Misc.VirtualSize -
 			SectionHeaders.front().VirtualAddress;
 		uint32_t MinNumberOfRelocations = MaxNumberOfRelocations - 
 			SizeOfPrimaryImage / 4096;
