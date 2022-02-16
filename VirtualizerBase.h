@@ -79,6 +79,7 @@
 // #include <winternl.h>
 // #include <ntstatus.h>
 #include <atlbase.h>
+#include <timeapi.h>
 
 // Configure base includes for shared base and libc
 #define _CRT_SECURE_NO_WARNINGS
@@ -95,8 +96,6 @@
 #define SPDLOG_ACTIVE_LEVEL SPDLOG_LEVEL_INFO
 #endif
 #define SPDLOG_LEVEL_NAMES { "TRACE", "DEBUG", "INFO", "WARNING", "ERROR", "FATAL", "OFF" }
-#define SPDLOG_NO_THREAD_ID
-#define SPDLOG_NO_ATOMIC_LEVELS
 #define SPDLOG_FMT_EXTERNAL
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>

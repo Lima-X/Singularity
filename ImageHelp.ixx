@@ -67,16 +67,15 @@ public:
 		TRACKER_CHECK_ABORT, // additional virtual tracker that is called before entering any big function to directly handle aborts
 	};
 
-
-	virtual void SetApproximatedRelocCount(
-		IN uint32_t Approximation
+	virtual void SetReadSectionCountOfView(
+		uint32_t NumberOfSections
 	) {
 		TRACE_FUNCTION_PROTO;
 	}
 
 	virtual void SetAddressOfInterest(
 		IN byte_t* VirtualAddress,
-		IN size_t* SizeOfInterest
+		IN size_t  SizeOfInterest
 	) {
 		TRACE_FUNCTION_PROTO;
 	}
@@ -257,18 +256,19 @@ public:
 		MAP_READ_EXECUTE = PAGE_EXECUTE_READ,
 		MAP_READWRITE_EXECUTE = PAGE_EXECUTE_READWRITE
 	};
-	byte_t* MapImageIntoMemory(                           // Tries to map the loaded image into memory,
-		                                                  // returns the actual location of where the image was mapped to.
-		INOUT void*  DesiredMapping = nullptr,            // The desired location of where to map the image to in memory
-		IN    size_t VirtualExtension = 0,                // The desired size of the file mapping object to be allocated,
-		                                                  // must be bigger or equal to the images virtual size.
-		IN    DWORD  Win32PageProtection = PAGE_READWRITE // A win32 compatible page protection to use for the mappings
+	byte_t* MapImageIntoMemory(                                          // Tries to map the loaded image into memory,
+		                                                                 // returns the actual location of where the image was mapped to.
+		OPT   IImageLoaderTracker* ExternTracker = nullptr,              // A external tracker callback used for introspection
+		INOUT void*                DesiredMapping = nullptr,             // The desired location of where to map the image to in memory
+		IN    size_t               VirtualExtension = 0,                 // The desired size of the file mapping object to be allocated,
+		                                                                 // must be bigger or equal to the images virtual size.
+		IN    DWORD                Win32PageProtection = PAGE_READWRITE  // A win32 compatible page protection to use for the mappings
 	) {
 		TRACE_FUNCTION_PROTO;
 
 		// Check if FileHandle has been rejected or if we are mapped already
 		if (FileHandle == INVALID_HANDLE_VALUE)
-			throw ImageHelpException("The filehandle has already been rejected, cannot map rejected file",
+			throw ImageHelpException("The file handle has already been rejected, cannot map rejected file",
 				ImageHelpException::STATUS_HANDLE_ALREADY_REJECTED);
 		if (ImageMapping.get())
 			throw ImageHelpException(
@@ -342,14 +342,14 @@ public:
 		// these are probably never all committed, they are just reserved,
 		// to expand the image to its maximum physical/virtual size,
 		// which is by spec 2gb as rva's are 31 bit to fit within a displacement32
-		auto ReservedMemory2 = MakeSmartPointerWithVirtualAlloc<
+		ImageMapping = MakeSmartPointerWithVirtualAlloc<
 			std::unique_ptr>(DesiredMapping,
-				2097152ull * 1024 - 1,
+				2097152ull * 1024,
 				MEM_RESERVE,
 				PAGE_NOACCESS);
-		CheckOrThrowMemory(ReservedMemory2.get());
+		CheckOrThrowMemory(ImageMapping.get());
 		SPDLOG_INFO("Reserved virtual memory at {} for image of size {}",
-			static_cast<void*>(ReservedMemory2.get()),
+			static_cast<void*>(ImageMapping.get()),
 			SizeOfImage);
 
 		// Now we commit space for, and load the PE-COFF header including the data directory and section header table
@@ -357,20 +357,20 @@ public:
 			decltype(IMAGE_OPTIONAL_HEADER::SizeOfHeaders)>(
 				ModuleHeaderOffset + OFFSET_OF(IMAGE_NT_HEADERS, OptionalHeader.SizeOfHeaders));
 		CheckOrThrowMemory(
-			ReservedMemory2.CommitVirtualRange(
-				ReservedMemory2.get(),
+			ImageMapping.CommitVirtualRange(
+				ImageMapping.get(),
 				CombinedHeaderSizeFromImage,
 				Win32PageProtection));
 		RequestReadWriteFileIo(FILE_IO_READ,
 			0, 
-			ReservedMemory2.get(),
+			ImageMapping.get(),
 			CombinedHeaderSizeFromImage);
 		SPDLOG_INFO("Loaded PE-COFF image headers at reserved range");
 
 
 		// Do basic image file tests to validate the image being suitable for processing or break out and abort
 		auto ImageHeader = reinterpret_cast<IMAGE_NT_HEADERS*>(
-			ReservedMemory2.get() + ModuleHeaderOffset);
+			ImageMapping.get() + ModuleHeaderOffset);
 		auto ImageFileCheckPattern = 0;
 		#define MERGE_CHECK_IMAGE(FailureExpression) (ImageFileCheckPattern |= (FailureExpression) << (--NumberOfMergeChecks))
 		{
@@ -393,7 +393,13 @@ public:
 		SPDLOG_INFO("Fully validated image, the image is suitable for processing");
 
 
+		// Preinitializes null tracker if unavailable and or prepare for actual loading
+		// this is also the first chance to abort the loading process.
 		// we now commit and map all sections into their respective virtual addresses
+		IImageLoaderTracker NullTracker{};
+		if (!ExternTracker)
+			ExternTracker = &NullTracker;
+		ExternTracker->SetReadSectionCountOfView(ImageHeader->FileHeader.NumberOfSections);
 		std::span SectionHeaderTable(IMAGE_FIRST_SECTION(
 			ImageHeader),
 			ImageHeader->FileHeader.NumberOfSections);
@@ -401,31 +407,34 @@ public:
 
 			// For each section the section will be mapped into its specified address range
 			CheckOrThrowMemory(
-				ReservedMemory2.CommitVirtualRange(
-					ReservedMemory2.get() + Section.VirtualAddress,
+				ImageMapping.CommitVirtualRange(
+					ImageMapping.get() + Section.VirtualAddress,
 					Section.Misc.VirtualSize,
 					Win32PageProtection));
 			RequestReadWriteFileIo(FILE_IO_READ,
 				Section.PointerToRawData,
-				ReservedMemory2.get() + Section.VirtualAddress,
+				ImageMapping.get() + Section.VirtualAddress,
 				Section.SizeOfRawData);
+			ExternTracker->UpdateTrackerOrAbortCheck(IImageLoaderTracker::TRACKER_UPDATE_SECTIONS);
 			SPDLOG_INFO("Mapped section \"{}\" at address {} with size {}",
 				std::string_view(reinterpret_cast<char*>(Section.Name), 
 					IMAGE_SIZEOF_SHORT_NAME),
-				static_cast<void*>(ReservedMemory2.get() + Section.VirtualAddress),
+				static_cast<void*>(ImageMapping.get() + Section.VirtualAddress),
 				Section.Misc.VirtualSize);
 		}
 
-		return (ImageMapping = std::move(ReservedMemory2)).get();
+		return ImageMapping.get();
 	}
-	byte_t* MapImageIntoMemoryAndReject(                  // Same as above function but rejects the file handle immediatly
-		INOUT void*  DesiredMapping = nullptr,            //
-		IN    size_t VirtualExtension = 0,				  //
-		IN    DWORD  Win32PageProtection = PAGE_READWRITE //
+	byte_t* MapImageIntoMemoryAndReject(                                // Same as above function but rejects the file handle immediatly
+		OPT   IImageLoaderTracker* ExternTracker = nullptr,             //
+		INOUT void*                DesiredMapping = nullptr,            //
+		IN    size_t               VirtualExtension = 0,                //
+		IN    DWORD                Win32PageProtection = PAGE_READWRITE //
 	) {
 		TRACE_FUNCTION_PROTO;
 
-		auto ImageMapping = MapImageIntoMemory(DesiredMapping,
+		auto ImageMapping = MapImageIntoMemory(ExternTracker,
+			DesiredMapping,
 			VirtualExtension,
 			Win32PageProtection);
 		RejectFileCloseHandles();
@@ -505,11 +514,15 @@ public:
 	}
 #pragma endregion
 
-	void RelocateImageToMappedOrOverrideBase( // Tries to relocate the image to its mapped image base or the base specified
-		OPT uintptr_t DesiredImageBase = 0    // A image base the image should virtually be relocated to,
-											  // the actual memory of the mapping isn't moved in the virtual address space
+	void RelocateImageToMappedOrOverrideBase(             // Tries to relocate the image to its mapped image base or the base specified
+		OPT IImageLoaderTracker* ExternTracker = nullptr,
+		OPT uintptr_t DesiredImageBase = 0                // A image base the image should virtually be relocated to,
+											              // the actual memory of the mapping isn't moved in virtual space
 	) {
 		TRACE_FUNCTION_PROTO;
+		IImageLoaderTracker NullTracker{};
+		if (!ExternTracker)
+			ExternTracker = &NullTracker;
 
 		// Calculate delta between the target image base and the current virtual mapping
 		if (!DesiredImageBase)
@@ -528,6 +541,8 @@ public:
 			GET_DATA_DIRECTORIES>()[IMAGE_DIRECTORY_ENTRY_BASERELOC];
 		RelocationBlockView RelocationView(ImageMapping.get(),
 			RelocationDirectory);
+		ExternTracker->SetAddressOfInterest(reinterpret_cast<byte_t*>(&RelocationDirectory),
+			sizeof(RelocationDirectory));
 
 		// Walk base relocation block table (needs excessive debugging)
 		for (auto& RelocationBlock : RelocationView) {
@@ -547,11 +562,13 @@ public:
 				// Calculate location of base relocation and treat relocation type
 				void* BaseRelocationAddress = RelocationBlock.VirtualAddress
 					+ BaseRelocation.Offset + ImageMapping.get();
+				ExternTracker->SetAddressOfInterest(static_cast<byte_t*>(BaseRelocationAddress), 0);
 				switch (BaseRelocation.Type) {
 				case IMAGE_REL_BASED_ABSOLUTE:
 					continue;
 				case IMAGE_REL_BASED_DIR64:
 					*reinterpret_cast<uintptr_t*>(BaseRelocationAddress) += RelocationDelta;
+					ExternTracker->UpdateTrackerOrAbortCheck(IImageLoaderTracker::TRACKER_UPDATE_RELOCS);
 					SPDLOG_DEBUG("Applied base relocation at address {}",
 						BaseRelocationAddress);
 					break;
@@ -569,7 +586,7 @@ public:
 				static_cast<void*>(&RelocationBlock));
 		}
 
-		// Fixup headers and exit
+		// Fix up headers and exit
 		GetCoffMemberByTemplateId<GET_OPTIONAL_HEADER>().ImageBase = DesiredImageBase;
 		SPDLOG_INFO("Fully relocated image and patched base, to virtual address {}",
 			reinterpret_cast<void*>(DesiredImageBase));

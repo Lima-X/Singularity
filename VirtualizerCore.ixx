@@ -2,65 +2,42 @@
 //
 
 #include "VirtualizerBase.h"
-#include <imgui.h>
-#include <backends\imgui_impl_glfw.h>
-#include <backends\imgui_impl_opengl3.h>
 #include <glfw\glfw3.h>
+#include <imgui.h>
+#include <backends\imgui_impl_opengl3.h>
+#include <backends\imgui_impl_glfw.h>
 #include <shlobj_core.h>
 
 #include <chrono>
+#include <deque>
+#include <filesystem>
+#include <functional>
+#include <mutex>
 #include <ranges>
 #include <span>
 #include <variant>
-#include <functional>
-#include <deque>
-#include <mutex>
-#include <filesystem>
 
 import ImageHelp;
-import DisassemblerEngine;
 import SymbolHelp;
+import DisassemblerEngine;
 
 using namespace std::literals::chrono_literals;
 namespace chrono = std::chrono;
 namespace filesystem = std::filesystem;
 
 
+#pragma region Visual mode interface
+
 // This defines a base interface type that every async queue object must inherit from
 class IVisualWorkObject {
 public:
+	virtual ~IVisualWorkObject() = 0;
+
 	virtual int32_t GetCurrentObjectState() const = 0;
-
 };
-
-#pragma region Console mode interface
-class ConsoleModifier {
-public:
-	ConsoleModifier(
-		IN HANDLE ConsoleHandle = GetStdHandle(STD_OUTPUT_HANDLE)
-	) 
-		: ConsoleHandle(ConsoleHandle) {
-		TRACE_FUNCTION_PROTO;
-
-		// Save previous console mode and switch to nicer mode
-		GetConsoleMode(ConsoleHandle, &PreviousConsoleMode);
-
-		auto NewConsoleMode = PreviousConsoleMode | ENABLE_VIRTUAL_TERMINAL_PROCESSING;
-		SetConsoleMode(ConsoleHandle, NewConsoleMode);
-	}
-
-	~ConsoleModifier() {
-		TRACE_FUNCTION_PROTO;
-
-		SetConsoleMode(ConsoleHandle, PreviousConsoleMode);
-	}
-
-	HANDLE ConsoleHandle;
-	DWORD  PreviousConsoleMode;
-};
-#pragma endregion
-
-#pragma region Visual mode interface
+IVisualWorkObject::~IVisualWorkObject() {
+	TRACE_FUNCTION_PROTO;
+}
 
 class VisualAppException
 	: public CommonExceptionType {
@@ -288,7 +265,7 @@ public:
 	VisualLoadImageObject(IN const VisualLoadImageObject&) = delete;
 	VisualLoadImageObject& operator=(IN const VisualLoadImageObject&) = delete;
 	VisualLoadImageObject(IN VisualLoadImageObject&& Other) {
-		TRACE_FUNCTION_PROTO; *this = std::move(Other);
+		TRACE_FUNCTION_PROTO; this->operator=(std::move(Other));
 	}
 	VisualLoadImageObject& operator=(IN VisualLoadImageObject&& Other) {
 		TRACE_FUNCTION_PROTO;
@@ -324,11 +301,12 @@ public:
 private:
 	std::unique_ptr<CommonExceptionType>  ExitExceptionCopy; // under some states this maybe valid and contains exact information
 															 // as to why the load could have failed
-	mutable std::atomic<CurrentLoadState> ImageLoadState;    // Describes the current load state
-	std::atomic<uint32_t>                 NumberOfPolyX;     // STATE_LOADING_MEMORY: NumberOfSections in image
-															 // STATE_RELOCATING:     NumberOfRelocations in image
+	mutable 
+	std::atomic<CurrentLoadState> ImageLoadState; // Describes the current load state
+	std::atomic_uint32_t          NumberOfPolyX;  // STATE_LOADING_MEMORY: NumberOfSections in image
+												  // STATE_RELOCATING:     NumberOfRelocations in image
 
-	IImageLoaderTracker* InfoTracker;
+	IImageLoaderTracker* InfoTracker; // Datatracker reference interface pointer, this is hosted by another instance
 	filesystem::path     ImageFile;
 	filesystem::path     PdbFile;
 				bool     DisableSymbolServer;
@@ -350,9 +328,8 @@ public:
 
 		ControlRequest ControlCommand;
 		bool           WorkItemhandled;
-		uint32_t       StatusResult;
 
-		IVisualWorkObject* WorkingObject;
+		std::unique_ptr<IVisualWorkObject> WorkingObject;
 	};
 
 	VisualSingularityApp(
@@ -376,28 +353,27 @@ public:
 			.OwnerController = this,
 			.ObjectToken = TokenForRequest,
 			.ControlCommand = CWI_OPEN_FILE,
-			.WorkingObject = new VisualOpenFileObject(DialogConfig) });
+			.WorkingObject = std::make_unique<VisualOpenFileObject>(
+				std::move(DialogConfig)) });
 		QueueEnlistWorkItem(&WorkItemEntry);
-		return static_cast<VisualOpenFileObject*>(WorkItemEntry.WorkingObject);
+		return static_cast<VisualOpenFileObject*>(WorkItemEntry.WorkingObject.get());
 	}
-	const VisualLoadImageObject* QueueLoadImageRequestWithTracker( // Schedules a load operation on the working threadpool
-																   // and returns the schedules request by pointer,
-																   // the returned object contains up to date information about the loading procedure
-		IN VisualLoadImageObject&& LoadImageInformation            // The information used to try to schedule the image
+	const VisualLoadImageObject* QueueLoadImageRequestWithTracker2(    // Schedules a load operation on the working threadpool
+																       // and returns the schedules request by pointer,
+																       // the returned object contains up to date information about the loading procedure
+		IN std::unique_ptr<VisualLoadImageObject> LoadImageInformation // The information used to try to schedule the image
 	) {
 		TRACE_FUNCTION_PROTO;
 
-	
 		const std::lock_guard Lock(ThreadPoolLock);
 		auto TokenForRequest = GenerateGlobalUniqueTokenId();
 		auto& WorkItemEntry = WorkResponseList.emplace_back(QueueWorkItem{
 			.OwnerController = this,
 			.ObjectToken = TokenForRequest,
 			.ControlCommand = CWI_LOAD_FILE,
-			.WorkingObject = new VisualLoadImageObject(
-				std::move(LoadImageInformation)) });
+			.WorkingObject = std::move(LoadImageInformation) });
 		QueueEnlistWorkItem(&WorkItemEntry);
-		return static_cast<VisualLoadImageObject*>(WorkItemEntry.WorkingObject);
+		return static_cast<VisualLoadImageObject*>(WorkItemEntry.WorkingObject.get());
 	}
 
 	void FreeWorkItemFromPool(
@@ -414,7 +390,7 @@ public:
 				) -> bool {
 					TRACE_FUNCTION_PROTO;
 
-					if (WorkItem.WorkingObject == WorkItemEntry) {
+					if (WorkItem.WorkingObject.get() == WorkItemEntry) {
 
 						// Found deque item for object
 						if (WorkItem.WorkItemhandled)
@@ -465,7 +441,7 @@ private:
 		switch (WorkObject->ControlCommand) {
 		case CWI_OPEN_FILE: {
 
-			auto OpenObject = static_cast<VisualOpenFileObject*>(WorkObject->WorkingObject);
+			auto OpenObject = static_cast<VisualOpenFileObject*>(WorkObject->WorkingObject.get());
 			OpenObject->OpenDlgState = VisualOpenFileObject::STATE_OPENING;
 
 			auto Status = CallbackMayRunLong(CallbackInstance);
@@ -474,6 +450,7 @@ private:
 			OpenObject->OpenFileResult = ComOpenFileDialogWithConfig(
 				*static_cast<OpenFileDialogConfig*>(OpenObject));
 
+			const std::lock_guard Lock(WorkObject->OwnerController->ThreadPoolLock);
 			if (OpenObject->OpenFileResult.empty()) {
 
 				OpenObject->OpenDlgState = VisualOpenFileObject::STATE_CANCELED;
@@ -482,15 +459,16 @@ private:
 			}
 
 			OpenObject->OpenDlgState = VisualOpenFileObject::STATE_DIALOG_DONE;
+			WorkObject->WorkItemhandled = true;
 			SPDLOG_INFO("User selected \"{}\", for image",
 				OpenObject->OpenFileResult);
 			break;
 		}
 		case CWI_LOAD_FILE: {
 
-			auto LoadObject = static_cast<VisualLoadImageObject*>(WorkObject->WorkingObject);
+			// Initilalize load and inform threadpool of possibly long running function
+			auto LoadObject = static_cast<VisualLoadImageObject*>(WorkObject->WorkingObject.get());
 			LoadObject->ImageLoadState = VisualLoadImageObject::STATE_LOADING_MEMORY;
-
 			auto Status = CallbackMayRunLong(CallbackInstance);
 			if (!Status)
 				SPDLOG_WARN("Long running function in quick threadpool, failed to created dedicated thread");
@@ -501,7 +479,7 @@ private:
 			auto& SymbolServer = WorkObject->OwnerController->SymbolServer;
 			try {
 				TargetImage = std::make_unique<ImageHelp>(LoadObject->ImageFile.string());
-				TargetImage->MapImageIntoMemory();
+				TargetImage->MapImageIntoMemory(LoadObject->InfoTracker);
 
 				// Check if we can try to load symbols
 				if (!LoadObject->DisableSymbolServer) {
@@ -522,15 +500,17 @@ private:
 				}
 
 				// Relocate Image in memory
+				LoadObject->NumberOfPolyX = TargetImage->ApproximateNumberOfRelocationsInImage();
 				LoadObject->ImageLoadState = VisualLoadImageObject::STATE_RELOCATING;
-				LoadObject->InfoTracker->SetApproximatedRelocCount(
-					TargetImage->ApproximateNumberOfRelocationsInImage());
-				TargetImage->RelocateImageToMappedOrOverrideBase();
+				TargetImage->RelocateImageToMappedOrOverrideBase(LoadObject->InfoTracker);
 
+				const std::lock_guard Lock(WorkObject->OwnerController->ThreadPoolLock);
 				LoadObject->ImageLoadState = VisualLoadImageObject::STATE_FULLY_LOADED;
+				WorkObject->WorkItemhandled = true;
 			}
 			catch (const CommonExceptionType& ExceptionInforamtion) {
 
+				const std::lock_guard Lock(WorkObject->OwnerController->ThreadPoolLock);
 				switch (ExceptionInforamtion.ExceptionTag) {
 				case CommonExceptionType::EXCEPTION_IMAGE_HELP:
 					LoadObject->ImageLoadState = VisualLoadImageObject::STATE_ERROR;
@@ -545,25 +525,25 @@ private:
 
 				case CommonExceptionType::EXCEPTION_VISUAL_APP:
 					LoadObject->ImageLoadState = VisualLoadImageObject::STATE_ABORTED;
-					SPDLOG_WARN("the current ongiung op was aborted by callback");
+					SPDLOG_WARN("the current ongoing op was aborted by callback");
 					break;
 
 				default:
 					__fastfail(-247628); // TODO: Temporary will be fixed soon
 				}
 
-				// Do cleanup
+				// Do cleanup and complete this request
+				WorkObject->WorkItemhandled = true;
 				SymbolServer.release();
 				TargetImage.release();
 			}
+
 			break;
 		}
 
 		case CWI_DO_PROCESSING_FINAL:
 			break;
 		}
-
-		WorkObject->WorkItemhandled = true;
 	}
 
 	std::deque<QueueWorkItem>   WorkResponseList;
@@ -575,30 +555,162 @@ private:
 };
 #pragma endregion
 
+#pragma region Console mode interface
+class ConsoleModifier {
+public:
+	ConsoleModifier(
+		IN HANDLE ConsoleHandle = GetStdHandle(STD_OUTPUT_HANDLE)
+	)
+		: ConsoleHandle(ConsoleHandle) {
+		TRACE_FUNCTION_PROTO;
 
+		// Save previous console mode and switch to nicer mode
+		GetConsoleMode(ConsoleHandle, &PreviousConsoleMode);
+
+		auto NewConsoleMode = PreviousConsoleMode | ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+		SetConsoleMode(ConsoleHandle, NewConsoleMode);
+	}
+
+	~ConsoleModifier() {
+		TRACE_FUNCTION_PROTO;
+
+		SetConsoleMode(ConsoleHandle, PreviousConsoleMode);
+	}
+
+	HANDLE ConsoleHandle;
+	DWORD  PreviousConsoleMode;
+};
+#pragma endregion
 
 class VisualTrackerApp 
 	: public IImageLoaderTracker {
 public:
+	
+	void DoCommonAbortChecksAndDispatch() {
 
-	void UpdateTrackerOrAbortCheck(
-		IN TrackerInfoTag TrackerType
-	) {
+	}
+	void DoWaitTimeInterval() {
 		TRACE_FUNCTION_PROTO;
 
-		switch (TrackerType)
-		{
-		case TrackerInfoTag::TRACKER_UPDATE_RELOCS:
+		// A thread safe and automatically cleaning up timer raiser, based on raii and static initialization
+		static class PeriodBeginHighResolutionClock {
+		public:
+			PeriodBeginHighResolutionClock() {
+				TRACE_FUNCTION_PROTO;
+
+				// Get system timer resolution bounds and try to raise the clock
+				auto Status = timeGetDevCaps(&TimerCaps,
+					sizeof(TimerCaps));
+				switch (Status) {
+				case MMSYSERR_ERROR:
+				case TIMERR_NOCANDO:
+					SPDLOG_WARN("Failed to query system resolution bounds, assume 2000hz - 64hz");
+					TimerCaps.wPeriodMax = 15;
+					TimerCaps.wPeriodMin = 1;
+					break;
+				}
+			}
+			~PeriodBeginHighResolutionClock() {
+				TRACE_FUNCTION_PROTO;
+
+				if (RaisedSystemClock) {
+
+					auto Status = timeEndPeriod(TimerCaps.wPeriodMin);
+					if (Status == TIMERR_NOCANDO)
+						SPDLOG_ERROR("Failed to lower clock manually");
+				}
+			}
+
+			void RaiseSystemTimerResolutionOnce() {
+				TRACE_FUNCTION_PROTO;
+
+				if (RaisedSystemClock)
+					return;
+				auto Status = timeBeginPeriod(TimerCaps.wPeriodMin);
+				if (Status == TIMERR_NOCANDO)
+					SPDLOG_ERROR("Failed to raise systemclock, assuming {}ms",
+						TimerCaps.wPeriodMin);
+				RaisedSystemClock = true;
+			}
+
+			const TIMECAPS& GetTimeCaps() const {
+				TRACE_FUNCTION_PROTO; return TimerCaps;
+			}
+
+		private:
+			TIMECAPS TimerCaps{};
+			bool     RaisedSystemClock = false;
+
+		} ClockLift;
+
+		// If the sleep interval is not big enough we just spinlock the cpu,
+		// this is the reason the virtual slow down function should not be used
+		// this is simply just there to exist and allow something that is 
+		// impractical anyways, just useful to more closely examine the process
+		for (auto TimeBegin = chrono::steady_clock::now(),
+			TimeNow = chrono::steady_clock::now();
+			chrono::duration_cast<chrono::microseconds>(TimeNow - TimeBegin)
+				<= chrono::microseconds(VirtualSleepSliderInUs);
+			TimeNow = chrono::steady_clock::now()) {
+
+			// In the rapid loop we additionally check if we can physically sleep
+			if (chrono::milliseconds(VirtualSleepSliderInUs / 1000) >=
+				chrono::milliseconds(ClockLift.GetTimeCaps().wPeriodMin)) {
+
+				// The wait time is big enough to physically sleep
+				ClockLift.RaiseSystemTimerResolutionOnce();
+				SleepEx(1, false);
+			}
+		}
+
+		while (PauseSeriveExecution)
+			SleepEx(1, false);
+	}
+
+	virtual void SetReadSectionCountOfView(
+		uint32_t NumberOfSections
+	) {
+		TRACE_FUNCTION_PROTO; 
+		NumberOfSectionsInImage = NumberOfSections;
+	}
+
+
+	void SetAddressOfInterest(
+		IN byte_t* VirtualAddress,
+		IN size_t  VirtualSize
+	) override {
+		TRACE_FUNCTION_PROTO;
+		CurrentAddressOfInterest = VirtualAddress;
+		VirtualSizeOfInterets = VirtualSize;
+	}
+
+	void UpdateTrackerOrAbortCheck(
+		IN IImageLoaderTracker::TrackerInfoTag TrackerType
+	) override {
+		TRACE_FUNCTION_PROTO;
+
+		switch (TrackerType) {
+		case  IImageLoaderTracker::TRACKER_UPDATE_SECTIONS:
+			++NumberOfSectionsLoaded;
+			break;
+		case IImageLoaderTracker::TRACKER_UPDATE_RELOCS:
 			++RelocsApplied;
 			break;
 		}
 
-		// Check abort flag
-		// TODO: implement
+		DoCommonAbortChecksAndDispatch();
+		DoWaitTimeInterval();
 	}
 
-	uint32_t              ApproximatedRelocs = 0;
-	std::atomic<uint32_t> RelocsApplied = 0;
+	std::atomic<byte_t*> CurrentAddressOfInterest = nullptr;
+	std::atomic_size_t   VirtualSizeOfInterets = 0;
+	std::atomic_uint32_t RelocsApplied = 0;
+	std::atomic_uint32_t NumberOfSectionsInImage = 0;
+	std::atomic_uint32_t NumberOfSectionsLoaded = 0;
+
+	// Utility for thrashing
+	std::atomic_bool     PauseSeriveExecution = false;
+	std::atomic_uint32_t VirtualSleepSliderInUs;
 };
 
 
@@ -619,6 +731,7 @@ enum EntryPointReturn : int32_t {
 	STATUS_FAILED_ARGUMENTS,
 	STATUS_FAILED_IMAGEHELP,
 	STATUS_FAILED_CFGTOOLS,
+	STATUS_FAILED_GUI_LOGIC,
 
 	STATUS_SUCCESS = 0,
 };
@@ -651,6 +764,7 @@ export int32_t main(
 
 		// Initialize and configure spdlog/fmt
 		spdlog::set_pattern(SPDLOG_SINGULARITY_SMALL_PATTERN);
+		// spdlog::set_level(spdlog::level::off);
 		spdlog::set_level(spdlog::level::debug);
 
 
@@ -698,272 +812,383 @@ export int32_t main(
 		return STATUS_FAILED_INITILIZATION;
 	}
 
-	// Test
-	// OpenFileDialogConfig Config{};
-	// Config.ButtonText = "Load Executable";
-	// Config.DefaultExtension = "exe";
-	// Config.DialogTitle = "Select executable image to load into view";
-	// Config.DefaultTypeIndex = 1;
-	// Config.FileFilters = { { "Executable", "*.exe;*.dll;*.sys" },
-	// 	{ "Symbols", "*.pdb" },
-	// 	{"Any files", "*.*" } };
-	// Config.FileNameLabel = "A file to load";
-	// auto FileName = ComOpenFileDialogWithConfig(Config);
-	// 
-	// SPDLOG_INFO(FileName);
-	// __debugbreak();
 
-
+	// These are the core components of the singularity backend to ui translation interface.
+	// They provide a simplified desynchronized interface for singularities api in the context
+	// of being usable from the ui, this obviously means that the things you can do through the ui
+	// are partially restricted in the sense that they don't allow full control of the api.
 	VisualSingularityApp SingularityApiController(0);
-	
-	bool show_demo_window = true;
-	bool show_another_window = false;
-	ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
-	SPDLOG_ERROR("TEST ERROR LOG");
+	VisualTrackerApp DataTrackLog{};
+	enum ImmediateProgramPhase {
+		PHASE_NEUTRAL_STARTUP = 0,
 
-	// Main loop
-	while (!glfwWindowShouldClose(PrimaryViewPort)) {
-		// Poll and handle events (inputs, window resize, etc.)
-		// You can read the io.WantCaptureMouse, io.WantCaptureKeyboard flags to tell if dear imgui wants to use your inputs.
-		// - When io.WantCaptureMouse is true, do not dispatch mouse input data to your main application.
-		// - When io.WantCaptureKeyboard is true, do not dispatch keyboard input data to your main application.
-		// Generally you may always pass all inputs to dear imgui, and hide them from your application based on those two flags.
-		glfwPollEvents();
+		STATE_WAITING_INPUTFILE_DLG,
+		STATE_WAITING_PDBFILE_DLG,
+		// STATE_WAITING_OUTPUTFILE_DLG,
+		
+		STATE_IMAGE_LOADING_MEMORY,
+		STATE_IMAGE_LOADED_WAITING,
 
-		// Start the Dear ImGui frame
-		ImGui_ImplOpenGL3_NewFrame();
-		ImGui_ImplGlfw_NewFrame();
-		ImGui::NewFrame();
-		ImGui::DockSpaceOverViewport();
+		STATE_IMAGE_PROCESSING_AUTO,
 
-		// 1. Show the big demo window (Most of the sample code is in ImGui::ShowDemoWindow()! You can browse its code to learn more about Dear ImGui!).
-		if (show_demo_window)
-			ImGui::ShowDemoWindow(&show_demo_window);
 
-		// 2. Primary Controller window, shows statistics and
-		ImGui::Begin("GeneralProgress tracker");                          // Create a window called "Hello, world!" and append into it.
-		{
-			static enum FileSelectionState {
-				STATE_LOCKED,
-				STATE_NONE,
-				STATE_WAITING_IMAGE,
-				STATE_WAITING_PDB,
-				STATE_LOADING,
 
-			} ProgramState = STATE_NONE;
-			static VisualTrackerApp SofTrackerObject{};
-			static const VisualLoadImageObject* LoaderObjectState = nullptr;
+	} ProgramPhase = PHASE_NEUTRAL_STARTUP;
 
-			// File selection header 
-			static char InputFilePath[MAX_PATH]{};
-			static char PathToPdb[MAX_PATH]{};
-			static char OutputPath[MAX_PATH]{};
+
+	// Primary render loop, this takes care of all the drawing and user io, it takes full control of the backend
+	try {
+		while (!glfwWindowShouldClose(PrimaryViewPort)) {
+
+			// Poll and handle events (inputs, window resize, etc.)
+			// You can read the io.WantCaptureMouse, io.WantCaptureKeyboard flags to tell if dear imgui wants to use your inputs.
+			// - When io.WantCaptureMouse is true, do not dispatch mouse input data to your main application.
+			// - When io.WantCaptureKeyboard is true, do not dispatch keyboard input data to your main application.
+			// Generally you may always pass all inputs to dear imgui, and hide them from your application based on those two flags.
+			glfwPollEvents();
+
+			// Start the Dear ImGui frame
+			static ImVec4 ClearBackgroundColor(0.45f, 0.55f, 0.60f, 1.00f);
+			ImGui_ImplOpenGL3_NewFrame();
+			ImGui_ImplGlfw_NewFrame();
+			ImGui::NewFrame();
+			ImGui::DockSpaceOverViewport(); // draw main window dock space
+
+			// 1. Show the big demo window (Most of the sample code is in ImGui::ShowDemoWindow()! You can browse its code to learn more about Dear ImGui!).
+			static bool EnableImguiDemoWindow = true;
+			if (EnableImguiDemoWindow)
+				ImGui::ShowDemoWindow(&EnableImguiDemoWindow);
+
+			// 2. Primary Controller window, shows statistics and
+			ImGui::Begin("GeneralProgress tracker");                          // Create a window called "Hello, world!" and append into it.
 			{
-				static const VisualOpenFileObject* LastFileOpenDialog = nullptr;
-				static bool EnableLastErrorMessage = false;
-				static std::string LastErrorMessage{};
-				static ImVec4 LastErrorColor{};
+				static const VisualLoadImageObject* LoaderObjectState = nullptr;
 
-				// Check if we are currently waiting for a file selection by user
-				switch (ProgramState) {
-				case STATE_WAITING_IMAGE:
-				case STATE_WAITING_PDB:
-
-					// Handle last requested IFileOpenDialog
-					switch (LastFileOpenDialog->GetCurrentObjectState()) {
-					case VisualOpenFileObject::STATE_ERROR:
-						LastErrorColor = ImVec4(1, 0, 0, 1);
-						LastErrorMessage = "Com interface failed to select file";	
-						break;
-
-					case VisualOpenFileObject::STATE_DIALOG_DONE:
-
-						if (!LastFileOpenDialog->GetResultString().empty())
-							strcpy(std::array{ InputFilePath, PathToPdb }
-								[ProgramState - STATE_WAITING_IMAGE],
-								LastFileOpenDialog->GetResultString().data());
-					}
-					if (LastFileOpenDialog->GetCurrentObjectState() < 0 ||
-						LastFileOpenDialog->GetCurrentObjectState() == 
-						VisualOpenFileObject::STATE_DIALOG_DONE) {
-
-						SingularityApiController.FreeWorkItemFromPool(LastFileOpenDialog);
-						LastFileOpenDialog = nullptr;
-						ProgramState = STATE_NONE;
-					}
-					break;
-
-				case STATE_LOADING:
-
-					// Check processing state for errors and reset
-					switch (LoaderObjectState->GetCurrentObjectState()) {
-					case VisualLoadImageObject::STATE_ABORTED:
-						LastErrorColor = ImVec4(1, 1, 0, 1);
-						break;
-					case VisualLoadImageObject::STATE_ERROR:
-						LastErrorColor = ImVec4(1, 0, 0, 1);
-					}
-					if (LoaderObjectState->GetCurrentObjectState() < 0) {
-
-						LastErrorMessage = LoaderObjectState->GetExceptionReport()->ExceptionText;
-						ProgramState = STATE_NONE;
-						SingularityApiController.FreeWorkItemFromPool(LoaderObjectState);
-						LoaderObjectState = nullptr;
-					}
-				}
-
-				// Image load text input line
-				ImGui::BeginDisabled(ProgramState != STATE_NONE);
-				ImGui::InputTextWithHint("##InputFile", "Executable image to load...",
-					InputFilePath, MAX_PATH);
-				ImGui::SameLine();
-				if (ImGui::Button("...##ImageSelect")) {
-
-					OpenFileDialogConfig ConfigRetainer{};
-					ConfigRetainer.DefaultExtension = ".exe;.dll;.sys";
-					ConfigRetainer.FileNameLabel = "PE-COFF executable image:";
-					ConfigRetainer.FileFilters = {
-						{ "PE-COFF", "*.exe;*.dll;*.sys" },
-						{ "PE-COFF2", "*.bin;*.scr"},
-						{ "Any file", "*.*" } };
-					ConfigRetainer.DefaultTypeIndex = 1;
-					ConfigRetainer.ButtonText = "Select Executable";
-
-					LastFileOpenDialog = SingularityApiController.QueueOpenFileRequestDialogWithTag(
-						std::move(ConfigRetainer));
-					ProgramState = STATE_WAITING_IMAGE;
-				}
-				ImGui::SameLine();
-				ImGui::Text("Input-File");
-
-				// Image load provide pdb or override
+				// File selection header 
+				static char InputFilePath[MAX_PATH]{};
+				static char PathToPdb[MAX_PATH]{};
+				static char OutputPath[MAX_PATH]{};
 				static bool LoadWithPdb = true;
-				ImGui::BeginDisabled(!LoadWithPdb);
-				ImGui::InputTextWithHint("##PdbFile", "PDB to load... (keep this empty to locate pdb)",
-					PathToPdb, MAX_PATH);
-				ImGui::SameLine();
-				if (ImGui::Button("...##PdbSelect")) {
+				{
+					static const VisualOpenFileObject* LastFileOpenDialog = nullptr;
+					static bool EnableLastErrorMessage = false;
+					static std::string LastErrorMessage{};
+					static ImVec4 LastErrorColor{};
 
-					OpenFileDialogConfig ConfigRetainer{};
-					ConfigRetainer.DefaultExtension = ".pdb";
-					ConfigRetainer.DefaultSelection = filesystem::path(InputFilePath).replace_extension(".pdb").filename().string();
-					ConfigRetainer.FileNameLabel = "Program database file:";
-					ConfigRetainer.FileFilters = {
-						{ "Symbols", "*.pdb" },
-						{ "Any file", "*.*" } };
-					ConfigRetainer.DefaultTypeIndex = 1;
-					ConfigRetainer.ButtonText = "Select PDB";
+					// Check if we are currently waiting for a file selection by user
+					switch (ProgramPhase) {
+					case STATE_WAITING_INPUTFILE_DLG:
+					case STATE_WAITING_PDBFILE_DLG:
 
-					filesystem::path InputFilePath2(InputFilePath);
-					ConfigRetainer.DialogTitle = InputFilePath2.empty() ? "Select program database file to load"
-						: fmt::format("Select program database file to load for \"{}\"",
-							InputFilePath2.filename().string());
+						// Handle last requested IFileOpenDialog
+						switch (LastFileOpenDialog->GetCurrentObjectState()) {
+						case VisualOpenFileObject::STATE_ERROR:
+							LastErrorColor = ImVec4(1, 0, 0, 1);
+							LastErrorMessage = "Com interface failed to select file";
+							break;
 
-					LastFileOpenDialog = SingularityApiController.QueueOpenFileRequestDialogWithTag(
-						std::move(ConfigRetainer));
-					ProgramState = STATE_WAITING_PDB;
+						case VisualOpenFileObject::STATE_DIALOG_DONE:
+
+							if (!LastFileOpenDialog->GetResultString().empty())
+								strcpy(std::array{ InputFilePath, PathToPdb }
+									[ProgramPhase - STATE_WAITING_INPUTFILE_DLG],
+									LastFileOpenDialog->GetResultString().data());
+						}
+						if (LastFileOpenDialog->GetCurrentObjectState() < 0 ||
+							LastFileOpenDialog->GetCurrentObjectState() ==
+							VisualOpenFileObject::STATE_DIALOG_DONE) {
+
+							// BUG: this has some weird ub association, somehow a finished object may crash here
+							// ig i shoudl verify locks in dispatch
+							SingularityApiController.FreeWorkItemFromPool(LastFileOpenDialog);
+							LastFileOpenDialog = nullptr;
+							ProgramPhase = PHASE_NEUTRAL_STARTUP;
+						}
+						break;
+
+					case STATE_IMAGE_LOADING_MEMORY:
+
+						// Check processing state for errors and reset
+						switch (LoaderObjectState->GetCurrentObjectState()) {
+						case VisualLoadImageObject::STATE_ABORTED:
+							LastErrorColor = ImVec4(1, 1, 0, 1);
+							break;
+						case VisualLoadImageObject::STATE_ERROR:
+							LastErrorColor = ImVec4(1, 0, 0, 1);
+						}
+						if (LoaderObjectState->GetCurrentObjectState() < 0) {
+
+							LastErrorMessage = LoaderObjectState->GetExceptionReport()->ExceptionText;
+							ProgramPhase = PHASE_NEUTRAL_STARTUP;
+							SingularityApiController.FreeWorkItemFromPool(LoaderObjectState);
+							LoaderObjectState = nullptr;
+						}
+					}
+
+					// Image load text input line
+					ImGui::BeginDisabled(ProgramPhase != PHASE_NEUTRAL_STARTUP);
+					ImGui::InputTextWithHint("##InputFile", "Executable image to load...",
+						InputFilePath, MAX_PATH);
+					ImGui::SameLine();
+					if (ImGui::Button("...##ImageSelect")) {
+
+						OpenFileDialogConfig ConfigRetainer{};
+						ConfigRetainer.DefaultExtension = ".exe;.dll;.sys";
+						ConfigRetainer.FileNameLabel = "PE-COFF executable image:";
+						ConfigRetainer.FileFilters = {
+							{ "PE-COFF", "*.exe;*.dll;*.sys" },
+							{ "PE-COFF2", "*.bin;*.scr"},
+							{ "Any file", "*.*" } };
+						ConfigRetainer.DefaultTypeIndex = 1;
+						ConfigRetainer.ButtonText = "Select Executable";
+
+						LastFileOpenDialog = SingularityApiController.QueueOpenFileRequestDialogWithTag(
+							std::move(ConfigRetainer));
+						ProgramPhase = STATE_WAITING_INPUTFILE_DLG;
+					}
+					ImGui::SameLine();
+					ImGui::Text("Input-File");
+
+					// Image load provide pdb or override
+					ImGui::BeginDisabled(!LoadWithPdb);
+					ImGui::InputTextWithHint("##PdbFile", "PDB to load... (keep this empty to locate pdb)",
+						PathToPdb, MAX_PATH);
+					ImGui::SameLine();
+					if (ImGui::Button("...##PdbSelect")) {
+
+						OpenFileDialogConfig ConfigRetainer{};
+						ConfigRetainer.DefaultExtension = ".pdb";
+						ConfigRetainer.DefaultSelection = filesystem::path(InputFilePath).replace_extension(".pdb").filename().string();
+						ConfigRetainer.FileNameLabel = "Program database file:";
+						ConfigRetainer.FileFilters = {
+							{ "Symbols", "*.pdb" },
+							{ "Any file", "*.*" } };
+						ConfigRetainer.DefaultTypeIndex = 1;
+						ConfigRetainer.ButtonText = "Select PDB";
+
+						filesystem::path InputFilePath2(InputFilePath);
+						ConfigRetainer.DialogTitle = InputFilePath2.empty() ? "Select program database file to load"
+							: fmt::format("Select program database file to load for \"{}\"",
+								InputFilePath2.filename().string());
+
+						LastFileOpenDialog = SingularityApiController.QueueOpenFileRequestDialogWithTag(
+							std::move(ConfigRetainer));
+						ProgramPhase = STATE_WAITING_PDBFILE_DLG;
+					}
+					ImGui::SameLine();
+					ImGui::Text("PDB-File");
+					ImGui::EndDisabled();
+					ImGui::EndDisabled();
+
+					// Provide target output path
+					ImGui::InputTextWithHint("##TargetFile", "Optional Filename to store the file as...",
+						OutputPath, MAX_PATH);
+					ImGui::SameLine();
+					if (ImGui::Button("Gen")) {
+
+						// Generate a suitable path name from input path
+						// TODO: optimize this and deuglify
+						filesystem::path InputFilePath2(InputFilePath);
+						InputFilePath2.replace_filename(
+							InputFilePath2.stem().string().append(
+								"-Mutated").append(
+									InputFilePath2.extension().string()));
+						strcpy(OutputPath, InputFilePath2.string().c_str());
+					}
+					ImGui::SameLine();
+					ImGui::Text("Target");
+
+					// Draw small config and load button, including logic
+					ImGui::BeginDisabled(ProgramPhase == STATE_IMAGE_LOADING_MEMORY);
+					ImGui::Checkbox("Load with Symbols", &LoadWithPdb);
+					ImGui::SameLine();
+					if (ImGui::Button("Load Image###LoadImageTrigger")) {
+
+						// Load image here, this schedules a load and stores the load object.
+						// This object is temporary and valid only for the load,
+						// it has to be trashed and returned to a cleanup function to free it,
+						// after that contained information is no longer valid and must be preserved.
+						LoaderObjectState = SingularityApiController.QueueLoadImageRequestWithTracker2(
+							std::make_unique<VisualLoadImageObject>(
+								InputFilePath,
+								!LoadWithPdb,
+								PathToPdb,
+								&DataTrackLog));
+						ProgramPhase = STATE_IMAGE_LOADING_MEMORY;
+					}
+					ImGui::EndDisabled();
+
+					// Virtual slowdown controls
+					static ImU32 SliderValue = 0;
+					static const ImU32 SliderMin = 0;
+					static const ImU32 SliderMax = UINT32_MAX / 2;
+					ImGui::SliderScalar("Virtual wait timer...",
+						ImGuiDataType_U32,
+						&SliderValue,
+						&SliderMin,
+						&SliderMax,
+						"%d us",
+						ImGuiSliderFlags_Logarithmic);
+					DataTrackLog.VirtualSleepSliderInUs = SliderValue;
+					ImGui::SameLine();
+					if (ImGui::Button(DataTrackLog.PauseSeriveExecution ? "Resume###ToggleSvrExec" : "Pause###ToggleSvrExec")) {
+
+						DataTrackLog.PauseSeriveExecution = !DataTrackLog.PauseSeriveExecution;
+						SPDLOG_INFO("Toggled serive execution, currently {}",
+							DataTrackLog.PauseSeriveExecution ? "paused" : "running");
+					}
+
+					if (EnableLastErrorMessage)
+						ImGui::TextColored(LastErrorColor, LastErrorMessage.c_str());
 				}
-				ImGui::SameLine();
-				ImGui::Text("PDB-File");
-				ImGui::EndDisabled();
+				ImGui::Separator();
 
-				// Provide target output path
-				ImGui::InputTextWithHint("##TargetFile", "Optional Filename to store the file as...",
-					OutputPath, MAX_PATH);
-				ImGui::SameLine();
-				if (ImGui::Button("Gen")) {
+				// The progress section, a quick lookup for some data while doing things
+				{
+					static const char* SelectionStateText;
 
-					// Generate a suitable path name from input path
-					// TODO: optimize this and deuglify
-					filesystem::path InputFilePath2(InputFilePath);
-					InputFilePath2.replace_filename(
-						InputFilePath2.stem().string().append(
-							"-Mutated").append(
-								InputFilePath2.extension().string()));
-					strcpy(OutputPath, InputFilePath2.string().c_str());
+					static const char* GlobalProgressOverlay = "No global tracking data, DO NOT SHOW";
+					static float GlobalProgress = 0.0f;
+					static std::string SubFrameProgressOverlay{};
+					static float SubFrameProgress = 0.0f;
+
+					switch (ProgramPhase) {
+					case PHASE_NEUTRAL_STARTUP:
+						SelectionStateText = "Waiting for file selection...";
+						GlobalProgress = 0;
+						SubFrameProgressOverlay = {};
+						SubFrameProgress = 0;
+						break;
+
+					case STATE_WAITING_INPUTFILE_DLG:
+					case STATE_WAITING_PDBFILE_DLG:
+						break;
+
+					case STATE_IMAGE_LOADING_MEMORY: // The backend is loading the file, we can print load information
+
+						switch (LoaderObjectState->GetCurrentObjectState()) {
+						case VisualLoadImageObject::STATE_SCHEDULED:
+							SelectionStateText = "File load is being scheduled...";
+							GlobalProgressOverlay = LoadWithPdb ? "0 / 3" : "0 / 2";
+							break;
+
+						case VisualLoadImageObject::STATE_LOADING_MEMORY:
+							SelectionStateText = "Loading image into primary system memory";
+							GlobalProgressOverlay = LoadWithPdb ? "0 / 3" : "0 / 2";
+							SubFrameProgressOverlay = fmt::format("Loaded {} / {}",
+								DataTrackLog.NumberOfSectionsLoaded,
+								DataTrackLog.NumberOfSectionsInImage);
+							if (DataTrackLog.NumberOfSectionsInImage)
+								SubFrameProgress = static_cast<float>(DataTrackLog.NumberOfSectionsLoaded) /
+								DataTrackLog.NumberOfSectionsInImage;
+							break;
+
+						case VisualLoadImageObject::STATE_LAODING_SYMBOLS:
+							SelectionStateText = "Loading symbols for image";
+							GlobalProgressOverlay = LoadWithPdb ? "1 / 3" : "1 /2";
+							GlobalProgress = 1.f / (LoadWithPdb ? 3 : 2);
+							SubFrameProgressOverlay = "Cannot track sub processing, waiting...";
+							SubFrameProgress = 0;
+							break;
+
+						case VisualLoadImageObject::STATE_RELOCATING:
+							SelectionStateText = "Relocating image in memory view";
+							GlobalProgressOverlay = LoadWithPdb ? "2 / 3" : "1 /2";
+							GlobalProgress = (2.f - !LoadWithPdb) / (LoadWithPdb ? 3 : 2);
+							SubFrameProgressOverlay = fmt::format("Applied {} / {}",
+								DataTrackLog.RelocsApplied,
+								std::max<uint32_t>(DataTrackLog.RelocsApplied,
+									LoaderObjectState->GetPolyXNumber()));
+							SubFrameProgress = static_cast<float>(DataTrackLog.RelocsApplied) /
+								std::max<uint32_t>(DataTrackLog.RelocsApplied,
+									LoaderObjectState->GetPolyXNumber());
+							break;
+
+						case VisualLoadImageObject::STATE_FULLY_LOADED:
+							SelectionStateText = "Fully loaded image into view";
+							GlobalProgressOverlay = LoadWithPdb ? "3 / 3" : "2 / 2";
+							GlobalProgress = 1;
+							ProgramPhase = STATE_IMAGE_LOADED_WAITING;
+							SingularityApiController.FreeWorkItemFromPool(LoaderObjectState);
+							LoaderObjectState = nullptr;
+							break;
+
+						default:
+							SPDLOG_CRITICAL("May not be able to end up here, faults have to be handled at a different position");
+							__fastfail(STATUS_FAILED_GUI_LOGIC);
+						}
+						break;
+
+					case STATE_IMAGE_LOADED_WAITING:
+						
+					default:
+						break;
+					}
+
+
+					ImGui::TextUnformatted(SelectionStateText);
+					ImGui::ProgressBar(GlobalProgress,
+						ImVec2(-FLT_MIN, 0),
+						GlobalProgressOverlay);
+					ImGui::SameLine();
+					ImGui::Text("GlobalProgress");
+
+					ImGui::ProgressBar(SubFrameProgress,
+						ImVec2(-FLT_MIN, 0),
+						SubFrameProgressOverlay.c_str());
+					ImGui::SameLine();
+					ImGui::Text("SubFrame");
 				}
-				ImGui::SameLine();
-				ImGui::Text("Target");
+				ImGui::Separator();
 
-				// Draw small config and load button, including logic
-				ImGui::Checkbox("Load with Symbols", &LoadWithPdb);
-				ImGui::SameLine();
-				if (ImGui::Button("Load Image###LoadImageTrigger")) {
 
-					// Load image here
-					VisualLoadImageObject LoaderObject(
-						InputFilePath,
-						!LoadWithPdb,
-						PathToPdb,
-						&SofTrackerObject);
-					LoaderObjectState = SingularityApiController.QueueLoadImageRequestWithTracker(
-						std::move(LoaderObject));
-					ProgramState = STATE_LOADING;
-				}
-				ImGui::EndDisabled();
 
-				if (EnableLastErrorMessage)
-					ImGui::TextColored(LastErrorColor, LastErrorMessage.c_str());
+
+				ImGui::Checkbox("Enable DemoWindow", &EnableImguiDemoWindow);
+				ImGui::Text("Application average %.3f ms/frame (%.1f FPS)",
+					1000.0f / ImGui::GetIO().Framerate,
+					ImGui::GetIO().Framerate);
 			}
-			ImGui::Separator();
-
-			// The progress section, a quick lookup for some data while doing things
-			{
-				static float GlobalProgress = 0.0f;
-				static float SubFrameProgress = 0.0f;
-
-				// File Input output selection
-				ImGui::ProgressBar(GlobalProgress);
-				ImGui::SameLine();
-				ImGui::Text("GlobalProgress");
-
-				ImGui::ProgressBar(SubFrameProgress);
-				ImGui::SameLine();
-				ImGui::Text("SubFrame");
-			}
-			ImGui::Separator();
-
-			ImGui::Checkbox("Enable DemoWindow", &show_demo_window);
-			ImGui::Text("Application average %.3f ms/frame (%.1f FPS)",
-				1000.0f / ImGui::GetIO().Framerate,
-				ImGui::GetIO().Framerate);
-		}
-		ImGui::End();
-
-		// 3. Show another simple window.
-		if (show_another_window)
-		{
-			ImGui::Begin("Another Window", &show_another_window);   // Pass a pointer to our bool variable (the window will have a closing button that will clear the bool when clicked)
-			ImGui::Text("Hello from another window!");
-			if (ImGui::Button("Close Me"))
-				show_another_window = false;
 			ImGui::End();
+
+
+
+
+
+
+			// Rendering imgui and copying to view port
+			ImGui::Render();
+			int WindowSizeW, WindowSizeH;
+			glfwGetFramebufferSize(PrimaryViewPort, &WindowSizeW, &WindowSizeH);
+			glViewport(0, 0, WindowSizeW, WindowSizeH);
+			glClearColor(ClearBackgroundColor.x * ClearBackgroundColor.w,
+				ClearBackgroundColor.y * ClearBackgroundColor.w,
+				ClearBackgroundColor.z * ClearBackgroundColor.w,
+				ClearBackgroundColor.w);
+			glClear(GL_COLOR_BUFFER_BIT);
+			ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+			// Update and Render additional Platform Windows
+			// (Platform functions may change the current OpenGL context, so we save/restore it to make it easier to paste this code elsewhere.
+			//  For this specific demo app we could also call glfwMakeContextCurrent(window) directly)
+			if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+
+				GLFWwindow* backup_current_context = glfwGetCurrentContext();
+				ImGui::UpdatePlatformWindows();
+				ImGui::RenderPlatformWindowsDefault();
+				glfwMakeContextCurrent(backup_current_context);
+			}
+
+			glfwSwapBuffers(PrimaryViewPort);
 		}
-
-		// Rendering imgui and copying to view port
-		ImGui::Render();
-		int display_w, display_h;
-		glfwGetFramebufferSize(PrimaryViewPort, &display_w, &display_h);
-		glViewport(0, 0, display_w, display_h);
-		glClearColor(clear_color.x * clear_color.w,
-			clear_color.y * clear_color.w,
-			clear_color.z * clear_color.w, clear_color.w);
-		glClear(GL_COLOR_BUFFER_BIT);
-		ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-
-		// Update and Render additional Platform Windows
-		// (Platform functions may change the current OpenGL context, so we save/restore it to make it easier to paste this code elsewhere.
-		//  For this specific demo app we could also call glfwMakeContextCurrent(window) directly)
-		if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
-
-			GLFWwindow* backup_current_context = glfwGetCurrentContext();
-			ImGui::UpdatePlatformWindows();
-			ImGui::RenderPlatformWindowsDefault();
-			glfwMakeContextCurrent(backup_current_context);
-		}
-
-		glfwSwapBuffers(PrimaryViewPort);
 	}
+	catch (const CommonExceptionType& ExecptionInformation) {
+		__debugbreak();
+	}
+	catch (const std::exception& Exception) {
+		__debugbreak();
+	}
+
 
 	// Cleanup
 	ImGui_ImplOpenGL3_Shutdown();
