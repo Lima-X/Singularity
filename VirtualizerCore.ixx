@@ -312,6 +312,55 @@ private:
 				bool     DisableSymbolServer;
 };
 
+class VisualSOPassObject :
+	public IVisualWorkObject {
+	friend class VisualSingularityApp;
+public:
+	enum CurrentSOMPassState {
+		STATE_ABORTED = -2000,
+		STATE_ERROR,
+
+		STATE_SCHEDULED = 0,
+		
+		
+		STATE_ALL_PASSES_APLIED_DONE,
+	};
+	enum CodeDiscoveryMode {
+		DISCOVER_USE_HIGHEST_AVAILABLE = 0,
+		DISCOVER_ACTIVE_SET_SEARCH,
+		DISCOVER_USE_SEH_EXCEPTION_TABLE,
+		DISCOVER_USE_PDB_FUNCTION_SYMBOLS,
+	};
+
+	VisualSOPassObject(
+		IN IDisassemblerTracker* ExternDisassemblerTracker
+	) 
+		: DisassmeblerTracker(ExternDisassemblerTracker) {
+		TRACE_FUNCTION_PROTO;
+	}
+
+	std::underlying_type_t<CurrentSOMPassState>
+		GetCurrentObjectState() const override {
+		TRACE_FUNCTION_PROTO; return ProcessingState;
+	}
+
+
+
+	VisualSOPassObject(IN const VisualSOPassObject&) = delete;
+	VisualSOPassObject& operator=(IN const VisualSOPassObject&) = delete;
+
+	bool EnableMultithreading = false;
+
+
+private:
+
+
+	mutable
+	std::atomic<CurrentSOMPassState> ProcessingState;
+	IDisassemblerTracker* DisassmeblerTracker;
+
+
+};
 
 
 
@@ -374,6 +423,22 @@ public:
 			.WorkingObject = std::move(LoadImageInformation) });
 		QueueEnlistWorkItem(&WorkItemEntry);
 		return static_cast<VisualLoadImageObject*>(WorkItemEntry.WorkingObject.get());
+	}
+	const VisualSOPassObject* QueueMainPassProcessObject(
+		IN std::unique_ptr<VisualSOPassObject> SOBPassInformation
+	) {
+		TRACE_FUNCTION_PROTO;
+
+		const std::lock_guard Lock(ThreadPoolLock);
+		auto TokenForRequest = GenerateGlobalUniqueTokenId();
+		auto& WorkItemEntry = WorkResponseList.emplace_back(QueueWorkItem{
+			.OwnerController = this,
+			.ObjectToken = TokenForRequest,
+			.ControlCommand = CWI_DO_PROCESSING_FINAL,
+			.WorkingObject = std::move(SOBPassInformation) });
+		QueueEnlistWorkItem(&WorkItemEntry);
+		return static_cast<VisualSOPassObject*>(WorkItemEntry.WorkingObject.get());
+
 	}
 
 	void FreeWorkItemFromPool(
@@ -449,19 +514,15 @@ private:
 				SPDLOG_WARN("Long running function in quick threadpool, failed to created dedicated thread");
 			OpenObject->OpenFileResult = ComOpenFileDialogWithConfig(
 				*static_cast<OpenFileDialogConfig*>(OpenObject));
-
+			
 			const std::lock_guard Lock(WorkObject->OwnerController->ThreadPoolLock);
-			if (OpenObject->OpenFileResult.empty()) {
-
-				OpenObject->OpenDlgState = VisualOpenFileObject::STATE_CANCELED;
-				SPDLOG_WARN("The user selected to cancel the file selection prompt");
-				break;
-			}
-
-			OpenObject->OpenDlgState = VisualOpenFileObject::STATE_DIALOG_DONE;
+			OpenObject->OpenDlgState = OpenObject->OpenFileResult.empty() ? VisualOpenFileObject::STATE_CANCELED
+				: VisualOpenFileObject::STATE_DIALOG_DONE;
 			WorkObject->WorkItemhandled = true;
-			SPDLOG_INFO("User selected \"{}\", for image",
-				OpenObject->OpenFileResult);
+			OpenObject->OpenFileResult.empty() ?
+				SPDLOG_WARN("The user selected to cancel the file selection prompt") :
+				SPDLOG_INFO("User selected \"{}\", for image",
+					OpenObject->OpenFileResult);
 			break;
 		}
 		case CWI_LOAD_FILE: {
@@ -583,9 +644,17 @@ public:
 #pragma endregion
 
 class VisualTrackerApp 
-	: public IImageLoaderTracker {
+	: public IImageLoaderTracker,
+	  public IDisassemblerTracker {
 public:
-	
+	VisualTrackerApp(
+		IN const VisualSingularityApp& ControllerApp
+	)
+		: ApplicationController(ControllerApp) {
+		TRACE_FUNCTION_PROTO;
+	}
+
+
 	void DoCommonAbortChecksAndDispatch() {
 
 	}
@@ -702,15 +771,41 @@ public:
 		DoWaitTimeInterval();
 	}
 
+	void UpdateTrackerOrAbortCheck(
+		IN IDisassemblerTracker::InformationUpdateType TrackerType
+	) override {
+		TRACE_FUNCTION_PROTO;
+
+		switch (TrackerType) {
+		}
+
+		DoCommonAbortChecksAndDispatch();
+		DoWaitTimeInterval();
+	}
+
+
+
 	std::atomic<byte_t*> CurrentAddressOfInterest = nullptr;
 	std::atomic_size_t   VirtualSizeOfInterets = 0;
+
+	// Load Statistics
 	std::atomic_uint32_t RelocsApplied = 0;
 	std::atomic_uint32_t NumberOfSectionsInImage = 0;
 	std::atomic_uint32_t NumberOfSectionsLoaded = 0;
 
+	// SOB pass statistics
+	std::atomic_uint32_t NumberOfFramesProcessed = 0;
+	std::atomic_uint32_t TotalNumberOfFrames = 0;
+	std::atomic_uint32_t NumberOfAllocatedCfgNodes = 0;
+	std::atomic_uint32_t NumebrOfInstructionsDecoded = 0;
+
+
 	// Utility for thrashing
 	std::atomic_bool     PauseSeriveExecution = false;
 	std::atomic_uint32_t VirtualSleepSliderInUs;
+
+private:
+	const VisualSingularityApp& ApplicationController;
 };
 
 
@@ -724,6 +819,24 @@ void GlfwErrorHandlerCallback(
 		ErrorCode,
 		Description);
 }
+
+
+void HelpMarker(
+	IN const char* Description
+) {
+	TRACE_FUNCTION_PROTO;
+
+	ImGui::TextDisabled("(?)");
+	if (ImGui::IsItemHovered()) {
+
+		ImGui::BeginTooltip();
+		ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35.0f);
+		ImGui::TextUnformatted(Description);
+		ImGui::PopTextWrapPos();
+		ImGui::EndTooltip();
+	}
+}
+
 
 enum EntryPointReturn : int32_t {
 	STATUS_FAILED_INITILIZATION = -2000,
@@ -818,7 +931,7 @@ export int32_t main(
 	// of being usable from the ui, this obviously means that the things you can do through the ui
 	// are partially restricted in the sense that they don't allow full control of the api.
 	VisualSingularityApp SingularityApiController(0);
-	VisualTrackerApp DataTrackLog{};
+	VisualTrackerApp DataTrackLog(SingularityApiController);
 	enum ImmediateProgramPhase {
 		PHASE_NEUTRAL_STARTUP = 0,
 
@@ -869,6 +982,7 @@ export int32_t main(
 				static char PathToPdb[MAX_PATH]{};
 				static char OutputPath[MAX_PATH]{};
 				static bool LoadWithPdb = true;
+				static bool AnalysisMultithreaded = false;
 				{
 					static const VisualOpenFileObject* LastFileOpenDialog = nullptr;
 					static bool EnableLastErrorMessage = false;
@@ -1017,33 +1131,42 @@ export int32_t main(
 						ProgramPhase = STATE_IMAGE_LOADING_MEMORY;
 					}
 					ImGui::EndDisabled();
+					if (EnableLastErrorMessage)
+						ImGui::TextColored(LastErrorColor, LastErrorMessage.c_str());
+					ImGui::Spacing();
 
-					// Virtual slowdown controls
+					// Virtual spooling and load controls
 					static ImU32 SliderValue = 0;
 					static const ImU32 SliderMin = 0;
 					static const ImU32 SliderMax = UINT32_MAX / 2;
-					ImGui::SliderScalar("Virtual wait timer...",
-						ImGuiDataType_U32,
-						&SliderValue,
-						&SliderMin,
-						&SliderMax,
-						"%d us",
-						ImGuiSliderFlags_Logarithmic);
-					DataTrackLog.VirtualSleepSliderInUs = SliderValue;
+					ImGui::BeginDisabled(AnalysisMultithreaded && 
+						ProgramPhase >= STATE_IMAGE_LOADED_WAITING);
+					ImGui::SliderScalar("Virtual wait timer...", ImGuiDataType_U32,
+						&SliderValue, &SliderMin, &SliderMax,
+						"%d us", ImGuiSliderFlags_Logarithmic);
+					DataTrackLog.VirtualSleepSliderInUs = AnalysisMultithreaded &&
+						ProgramPhase >= STATE_IMAGE_LOADED_WAITING ? 0 : SliderValue;
+					ImGui::EndDisabled();
 					ImGui::SameLine();
+					HelpMarker("Virtual time spooling can make use of an sleeping spinlocking hybrid interval timer, "
+						"this can result in cpu thrashing as its extremely hard on a core while waiting a very short interval.\n"
+						"Anything below the minimum system clock resolution will be spinlocked, "
+						"switch to blocking mode to avoid thrashing, this will however result in inaccurate timings.\n\n"
+						"This feature is disabled in multithreaded work mode, use single threading to slow down time!");
 					if (ImGui::Button(DataTrackLog.PauseSeriveExecution ? "Resume###ToggleSvrExec" : "Pause###ToggleSvrExec")) {
 
 						DataTrackLog.PauseSeriveExecution = !DataTrackLog.PauseSeriveExecution;
 						SPDLOG_INFO("Toggled serive execution, currently {}",
 							DataTrackLog.PauseSeriveExecution ? "paused" : "running");
 					}
-
-					if (EnableLastErrorMessage)
-						ImGui::TextColored(LastErrorColor, LastErrorMessage.c_str());
+					ImGui::SameLine();
+					static bool SpinLockDisable = false;
+					ImGui::Checkbox("Disable spinlocking", &SpinLockDisable);
 				}
 				ImGui::Separator();
 
 				// The progress section, a quick lookup for some data while doing things
+				static const VisualSOPassObject* MainSOBPassObject = nullptr;
 				{
 					static const char* SelectionStateText;
 
@@ -1108,6 +1231,11 @@ export int32_t main(
 							SelectionStateText = "Fully loaded image into view";
 							GlobalProgressOverlay = LoadWithPdb ? "3 / 3" : "2 / 2";
 							GlobalProgress = 1;
+							SubFrameProgressOverlay = fmt::format("Done {} / {}",
+								DataTrackLog.RelocsApplied,
+								std::max<uint32_t>(DataTrackLog.RelocsApplied,
+									LoaderObjectState->GetPolyXNumber()));
+							SubFrameProgress = 1;
 							ProgramPhase = STATE_IMAGE_LOADED_WAITING;
 							SingularityApiController.FreeWorkItemFromPool(LoaderObjectState);
 							LoaderObjectState = nullptr;
@@ -1138,6 +1266,74 @@ export int32_t main(
 						SubFrameProgressOverlay.c_str());
 					ImGui::SameLine();
 					ImGui::Text("SubFrame");
+				}
+				ImGui::Separator();
+
+				// Analysis and work configuration controls
+				{
+					ImGui::BeginDisabled(ProgramPhase != STATE_IMAGE_LOADED_WAITING);
+
+
+					// ImGui::BeginTable("AnalysisConfig", 2, ImGuiTableFlags_BordersInnerH
+					// 	| ImGuiTableFlags_BordersInnerV);
+
+					static const char* CodeDiscoveryModePreview = "Select mode";
+					static int CodeDiscoveryMode = 0; // 1 based index, 0 uses the highest available
+					const char* CodeDiscoverModes[]{
+						"Recursive search queue",
+						"Enumerate SEH exception table",
+						"Enumerate PDB Symbol tables"
+					};
+					if (ImGui::BeginCombo("Code-Discovery", CodeDiscoveryModePreview)) {
+						for (auto i = 0; i < IM_ARRAYSIZE(CodeDiscoverModes); ++i) {
+
+							bool IsSelected = CodeDiscoveryMode - 1 == i;
+							if (i != 2 || LoadWithPdb) // Quick shorut cuircuit to exclude pdb search when pdbs arent loaded
+								ImGui::Selectable(CodeDiscoverModes[i], &IsSelected);
+
+							if (IsSelected) {
+
+								ImGui::SetItemDefaultFocus();
+								CodeDiscoveryModePreview = CodeDiscoverModes[i];
+								CodeDiscoveryMode = i + 1;
+							}
+						}
+					
+						ImGui::EndCombo();
+					}
+					ImGui::SameLine();
+					HelpMarker("Selects how the engine should search for code, "
+						"if non is selected the highest available is chosen by default");
+
+					ImGui::Checkbox("Enable multithreading", &AnalysisMultithreaded);
+					ImGui::SameLine();
+					HelpMarker("Configures the controler to schedule individual functions on the thread pool,"
+						"instead of looping through them.\n"
+						"This settings disables the virtual time spooling, due to cpu thrashing");
+					
+
+					if (ImGui::Button("Run Analysis")) {
+
+						// Initialalize substation
+
+						MainSOBPassObject = SingularityApiController.QueueMainPassProcessObject(
+							std::make_unique<VisualSOPassObject>(&DataTrackLog));
+					}
+
+					// ImGui::EndTable();
+					ImGui::EndDisabled();
+					ImGui::Spacing();
+
+					// Statistics:
+
+					ImGui::BeginTable("StatisticsData", 2, ImGuiTableFlags_BordersInnerH
+						| ImGuiTableFlags_BordersInnerV);
+					ImGui::TextUnformatted("Frames analyzed:");
+					ImGui::TableNextColumn();
+					ImGui::Text("%d / %d", DataTrackLog.NumberOfFramesProcessed.load(),
+						DataTrackLog.TotalNumberOfFrames.load());
+
+
 				}
 				ImGui::Separator();
 

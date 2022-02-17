@@ -539,6 +539,13 @@ public:
 		UPDATE_RESET_COUNTER
 	};
 
+	virtual void UpdateTrackerOrAbortCheck(
+		IN InformationUpdateType TrackerTpye
+	) {
+		TRACE_FUNCTION_PROTO;
+	}
+
+
 	virtual void operator()(                  // This function is called from the disassembler engine context, stacktraces can be taken
 		IN InformationUpdateType UpdateType,  // The specific counter or tracker entry the disassembler engine wants to modify
 		IN UpdateInformation     Operation    // How the caller wants to modify the counter, what it actually does is up to the implementor
