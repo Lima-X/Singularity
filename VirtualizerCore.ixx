@@ -7,6 +7,7 @@
 #include <backends\imgui_impl_opengl3.h>
 #include <backends\imgui_impl_glfw.h>
 #include <shlobj_core.h>
+#include <spdlog/sinks/base_sink.h>
 
 #include <chrono>
 #include <deque>
@@ -837,6 +838,194 @@ void HelpMarker(
 	}
 }
 
+class ImGuiSpdLogAdaptor 
+	: public spdlog::sinks::base_sink<std::mutex> {
+	struct SinkContentEntry {
+		int32_t         NewLineIndex;
+
+		bool            LevelIsValid;
+		spdlog::level_t LogLevel;
+		size_t          StartColorRange;
+		size_t          EndColorRange;
+	};
+	using sink_t = spdlog::sinks::base_sink<std::mutex>;
+public:
+
+	void DrawLogWindow(
+		INOUT bool& ShowWindow
+	) {
+		TRACE_FUNCTION_PROTO;
+
+		if (ImGui::Begin("Singularity Log", &ShowWindow)) {
+			
+			// Options menu
+			if (ImGui::BeginPopup("Options"))
+			{
+				ImGui::Checkbox("Auto-scroll", &EnableAutoScrolling);
+				ImGui::EndPopup();
+			}
+
+			// Main window
+			if (ImGui::Button("Options"))
+				ImGui::OpenPopup("Options");
+			ImGui::SameLine();
+			bool ClearLog = ImGui::Button("Clear");
+			ImGui::SameLine();
+			bool CopyToClipboard = ImGui::Button("Copy");
+			ImGui::SameLine();
+
+			ImGui::Separator();
+			ImGui::BeginChild("scrolling", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
+
+			if (ClearLog)
+				ClearLogBuffers();
+			if (CopyToClipboard)
+				ImGui::LogToClipboard();
+
+			ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
+			const char* buf = LoggedContent.begin();
+			const char* buf_end = LoggedContent.end();
+			{
+				
+				ImGuiListClipper clipper;
+				clipper.Begin(LogMetaData.size());
+				while (clipper.Step()) {
+
+					for (int ClipperLineNumber = clipper.DisplayStart;
+						ClipperLineNumber < clipper.DisplayEnd;
+						++ClipperLineNumber) {
+
+
+						if (LogMetaData[ClipperLineNumber].LevelIsValid) {
+
+							// We have to print with color data
+
+
+							// First print text 
+							const char* LineStart = LoggedContent.begin() + 
+								LogMetaData[ClipperLineNumber].NewLineIndex;
+							const char* LineTillColorField = LoggedContent.begin() +
+								LogMetaData[ClipperLineNumber].StartColorRange;
+							ImGui::TextUnformatted(LineStart, LineTillColorField);
+							ImGui::SameLine();
+
+							const ImVec4 LogLevelToColor[]{
+								{ 1,   1, 1, 1 }, // Trace
+								{ 0,   1, 1, 1 }, // Debug
+								{ 0,   1, 0, 1 }, // Info
+								{ 1,   1, 0, 1 }, // Warning
+								{ 1,   0, 0, 1 }, // Error
+								{ 0.5, 0, 0, 1 }, // Critical
+								{ 0,   0, 0, 0 }  // Off
+							};
+							ImGui::PushStyleColor(ImGuiCol_Text, LogLevelToColor[LogMetaData[ClipperLineNumber].LogLevel]);
+
+							const char* EndOfColorField = LoggedContent.begin() +
+								LogMetaData[ClipperLineNumber].EndColorRange;
+
+							ImGui::TextUnformatted(LineTillColorField, EndOfColorField);
+							ImGui::SameLine();
+							ImGui::PopStyleColor();
+							
+							const char* LineEnd = (ClipperLineNumber + 1 < LogMetaData.size()) ?
+								(LoggedContent.begin() + LogMetaData[ClipperLineNumber + 1].NewLineIndex)
+								: LoggedContent.end();
+							ImGui::TextUnformatted(EndOfColorField, LineEnd - 1);
+						}
+						else {
+
+							ImGui::Indent();
+							const char* LineStart = LoggedContent.begin() +
+								LogMetaData[ClipperLineNumber].NewLineIndex;
+							const char* LineEnd = (ClipperLineNumber + 1 < LogMetaData.size()) ?
+								(LoggedContent.begin() + LogMetaData[ClipperLineNumber + 1].NewLineIndex) 
+								: LoggedContent.end();
+							ImGui::TextUnformatted(LineStart, LineEnd - 1);
+							ImGui::Unindent();
+						}
+					}
+				}
+				clipper.End();
+			}
+			ImGui::PopStyleVar();
+
+			
+			if (EnableAutoScrolling &&
+				ImGui::GetScrollY() >= ImGui::GetScrollMaxY())
+				ImGui::SetScrollHereY(1.0f);
+
+			ImGui::EndChild();
+			ImGui::End();
+		}
+	}
+
+	void ClearLogBuffers(
+		IN bool DisableLock = false
+	) {
+		TRACE_FUNCTION_PROTO;
+
+		if (!DisableLock)
+			sink_t::mutex_.lock();
+
+		LoggedContent.clear();
+		LogMetaData.clear();
+		
+		if (!DisableLock)
+			sink_t::mutex_.unlock();
+	}
+
+protected:
+	void sink_it_(
+		IN const spdlog::details::log_msg& LogMessage
+	) {
+		// This is all protected by the base sink under a mutex
+		TRACE_FUNCTION_PROTO;
+
+		// Format the logged message and push it into the text buffer
+		spdlog::memory_buf_t FormattedBuffer;
+		sink_t::formatter_->format(
+			LogMessage, FormattedBuffer);
+		std::string FormattedText = fmt::to_string(FormattedBuffer);
+		
+		auto OldTextBufferSize = LoggedContent.size();
+		LoggedContent.append(FormattedText.c_str(),
+			FormattedText.c_str() + FormattedText.size());
+
+
+		SinkContentEntry MessageMeta{
+			OldTextBufferSize,
+			true,
+			LogMessage.level,
+			LogMessage.color_range_start + OldTextBufferSize,
+			LogMessage.color_range_end + OldTextBufferSize
+		};
+		LogMetaData.push_back(MessageMeta);
+		for (auto NewTextBufferSize = LoggedContent.size();
+			OldTextBufferSize < NewTextBufferSize;
+			++OldTextBufferSize)
+			if (LoggedContent[OldTextBufferSize] == '\n') {
+
+				SinkContentEntry MessageMeta{
+					OldTextBufferSize + 1,
+					false
+				};
+				LogMetaData.push_back(MessageMeta);
+			}
+		LogMetaData.pop_back(); // very ugly way to inject entries
+	}
+	void flush_() { TRACE_FUNCTION_PROTO; }
+
+private:
+	// Using faster more efficient replacements of stl types for rendering
+	ImGuiTextBuffer            LoggedContent;
+	ImVector<SinkContentEntry> LogMetaData;
+
+
+	bool EnableAutoScrolling;
+};
+
+
+
 
 enum EntryPointReturn : int32_t {
 	STATUS_FAILED_INITILIZATION = -2000,
@@ -856,6 +1045,7 @@ export int32_t main(
 
 	// Instantiate prerequisites such as loggers and external libraries
 	// ConsoleModifier ScopedConsole;
+	spdlog::sink_ptr VisualSinkObject;
 	GLFWwindow* PrimaryViewPort;
 	xed_state_t XedConfiguration;
 	try {
@@ -876,10 +1066,10 @@ export int32_t main(
 			XED_ADDRESS_WIDTH_64b);
 
 		// Initialize and configure spdlog/fmt
+		VisualSinkObject = std::make_shared<ImGuiSpdLogAdaptor>();
+		spdlog::default_logger()->sinks().push_back(VisualSinkObject);
 		spdlog::set_pattern(SPDLOG_SINGULARITY_SMALL_PATTERN);
-		// spdlog::set_level(spdlog::level::off);
 		spdlog::set_level(spdlog::level::debug);
-
 
 
 		// Configure and initialize glfw and imgui
@@ -932,6 +1122,7 @@ export int32_t main(
 	// are partially restricted in the sense that they don't allow full control of the api.
 	VisualSingularityApp SingularityApiController(0);
 	VisualTrackerApp DataTrackLog(SingularityApiController);
+	auto VisualLogger = static_cast<ImGuiSpdLogAdaptor*>(VisualSinkObject.get());
 	enum ImmediateProgramPhase {
 		PHASE_NEUTRAL_STARTUP = 0,
 
@@ -947,7 +1138,6 @@ export int32_t main(
 
 
 	} ProgramPhase = PHASE_NEUTRAL_STARTUP;
-
 
 	// Primary render loop, this takes care of all the drawing and user io, it takes full control of the backend
 	try {
@@ -1326,12 +1516,12 @@ export int32_t main(
 
 					// Statistics:
 
-					ImGui::BeginTable("StatisticsData", 2, ImGuiTableFlags_BordersInnerH
-						| ImGuiTableFlags_BordersInnerV);
-					ImGui::TextUnformatted("Frames analyzed:");
-					ImGui::TableNextColumn();
-					ImGui::Text("%d / %d", DataTrackLog.NumberOfFramesProcessed.load(),
-						DataTrackLog.TotalNumberOfFrames.load());
+					// ImGui::BeginTable("StatisticsData", 2, ImGuiTableFlags_BordersInnerH
+					// 	| ImGuiTableFlags_BordersInnerV);
+					// ImGui::TextUnformatted("Frames analyzed:");
+					// ImGui::TableNextColumn();
+					// ImGui::Text("%d / %d", DataTrackLog.NumberOfFramesProcessed.load(),
+					// 	DataTrackLog.TotalNumberOfFrames.load());
 
 
 				}
@@ -1348,7 +1538,9 @@ export int32_t main(
 			ImGui::End();
 
 
-
+			static bool EnableLogView = true;
+			if (EnableLogView)
+				VisualLogger->DrawLogWindow(EnableLogView);
 
 
 
