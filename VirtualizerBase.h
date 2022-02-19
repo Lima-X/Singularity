@@ -106,7 +106,47 @@ extern "C" {
 
 // Special logging functionalities 
 #define TRACE_FUNCTION_PROTO static_cast<void>(0)
-#define SPDLOG_SINGULARITY_SMALL_PATTERN "[%^%=7l%$ : %t ] %v"
+
+#define TO_VALUE_STRING(Value) #Value
+#define ESC_COLOR(Color) "\x1b["#Color"m"
+enum AnsiEscapeSequenceTag : int32_t {
+	FORMAT_RESET_COLORS = 0,
+	COLOR_BLACK = 30,
+	COLOR_RED = 31,
+	COLOR_GREEN = 32,
+	COLOR_YELLOW = 33,
+	COLOR_BLUE = 34,
+	COLOR_MAGENTA = 35,
+	COLOR_CYAN = 36,
+	COLOR_WHITE = 37,
+	COLOR_BRIGHTBLACK = 90,
+	COLOR_BRIGHTRED = 91,
+	COLOR_BRIGHTGREEN = 92,
+	COLOR_BRIGHTYELLOW = 93,
+	COLOR_BRIGHTBLUE = 94,
+	COLOR_BRIGHTMAGENTA = 95,
+	COLOR_BRIGHTCYAN = 96,
+	COLOR_BRIGHTWHITE = 97,
+}; 
+#define ESC_RESET         "\x1b[0m"
+#define ESC_BLACK         "\x1b[30m"
+#define ESC_RED           "\x1b[31m"
+#define ESC_GREEN         "\x1b[32m"
+#define ESC_YELLOW        "\x1b[33m"
+#define ESC_BLUE          "\x1b[34m"
+#define ESC_MAGENTA       "\x1b[35m"
+#define ESC_CYAN          "\x1b[36m"
+#define ESC_WHITE         "\x1b[37m"
+#define ESC_BRIGHTBLACK   "\x1b[90m"
+#define ESC_BRIGHTRED     "\x1b[91m"
+#define ESC_BRIGHTGREEN   "\x1b[92m"
+#define ESC_BRIGHTYELLOW  "\x1b[93m"
+#define ESC_BRIGHTBLUE    "\x1b[94m"
+#define ESC_BRIGHTMAGENTA "\x1b[95m"
+#define ESC_BRIGHTCYAN    "\x1b[96m"
+#define ESC_BRIGHTWHITE   "\x1b[97m"
+#define SPDLOG_SINGULARITY_SMALL_PATTERN "[ %^%=l%$ : "ESC_YELLOW"%t"ESC_RESET" ] %v"
+
 
 // Legacy style type helpers
 #define OFFSET_OF offsetof

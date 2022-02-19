@@ -9,22 +9,24 @@ setlocal
 set OriginalWorkingDirectory=%cd%
 cd %~dp0
 
+
+rem Build xed, this has special semantics in the context of this specific script,
+rem first we need to clone mbuild for xeds mfile, then we can let xed build.
+rem After xed finished mbuild can be reomoved again and vcvars64 will be loaded
+if not exist ".\mbuild" (
+	git clone https://github.com/intelxed/mbuild
+)
+python .\xed\mfile.py --install-dir=".\xed\out" install
+rd /s /q obj
+call vcvars64.bat
+
 rem glfw has to be also build now, as this project is moving to gui for debugging
 cd "..\glfw"
 cmake . -D USE_MSVC_RUNTIME_LIBRARY_DLL=OFF
 msbuild ".\src\glfw.vcxproj" -p:Configuration=Release
 
-rem Build xed, this has special semantics in the context of this specific script,
-rem first we need to clone mbuild for xeds mfile, then we can let xed build.
-rem After xed finished mbuild can be reomoved again and vcvars64 will be loaded
-git clone https://github.com/intelxed/mbuild
-python .\xed\mfile.py --install-dir=".\xed\out" install
-rd /s /q obj
-rd /s /q mbuild
-call vcvars64.bat
-
 rem The shitty hack has been fixed, this now forces the creation with MT
-cd ".\fmt"
+cd "..\fmt"
 cmake . -D CMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded"
 msbuild ".\fmt.vcxproj" -p:Configuration=Release
 

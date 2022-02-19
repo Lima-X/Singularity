@@ -16,6 +16,7 @@
 #include <mutex>
 #include <ranges>
 #include <span>
+#include <sstream>
 #include <variant>
 
 import ImageHelp;
@@ -32,9 +33,25 @@ namespace filesystem = std::filesystem;
 // This defines a base interface type that every async queue object must inherit from
 class IVisualWorkObject {
 public:
-	virtual ~IVisualWorkObject() = 0;
+	virtual ~IVisualWorkObject() = 0;	
+	using enum_t = int32_t;
+	enum WorkStateBase : enum_t {       // All abstracts of this interface must implement these state enums,
+		                                 // they are used to determine the current state of the abstract object.
+		                                 // Failing to implement them will result in undfined behaviour,
+		                                 // the implementor can freely add other object states later, these are required.
+		OPT STATE_ABORTING_CALL = -2000, // The async call was schedule with an abort, the abort is in progress
+		OPT STATE_ABORTED_FULLY,         // The call finished its abort, the object was effectively "handled" by dispatch
+		    STATE_CALL_ERROR,            // An error occurred during a async call, the object may communicate more info
+		                                 // about the error in a object specific way.
+										 // All values after here indicate implementation specific errors
 
-	virtual int32_t GetCurrentObjectState() const = 0;
+		    STATE_CALL_SCHEDULED = 0,    // The object is currently scheduled and waiting to be serviced
+			                             // All values after here indicate ongoing handling to dispatch
+
+		    STATE_CALL_FINISHED = 2000,  // The async object call was fully handled by dispatch
+			                             // All values after here indicate successful handling to dispatch
+	};
+	virtual enum_t GetWorkObjectState() const = 0;
 };
 IVisualWorkObject::~IVisualWorkObject() {
 	TRACE_FUNCTION_PROTO;
@@ -48,6 +65,7 @@ public:
 		STATUS_CANNOT_FREE_IN_PROGRESS,
 		STATUS_FREED_UNREGISTERED_OBJ,
 
+		STATUS_ABORTED_OBJECT_IN_CALL,
 	};
 
 	VisualAppException(
@@ -140,7 +158,7 @@ std::string ComOpenFileDialogWithConfig(
 			Filters.emplace_back(StringRetainer[i].c_str(),
 				StringRetainer[i + 1].c_str());
 	
-		ComResult = OpenFileDialog->SetFileTypes(Filters.size(),
+		ComResult = OpenFileDialog->SetFileTypes(static_cast<uint32_t>(Filters.size()),
 			Filters.data());
 		if (FAILED(ComResult))
 			return {};
@@ -198,12 +216,11 @@ class VisualOpenFileObject
 	friend class VisualSingularityApp;
 public:
 	enum CurrentOpenState {
-		STATE_CANCELED = -2000,
-		STATE_ERROR,
-
-		STATE_SCHEDULED = 0,
+		STATE_COM_ERROR = IVisualWorkObject::STATE_CALL_ERROR,
+		STATE_SCHEDULED = IVisualWorkObject::STATE_CALL_SCHEDULED,
 		STATE_OPENING,
-		STATE_DIALOG_DONE,
+		STATE_DIALOG_DONE = IVisualWorkObject::STATE_CALL_FINISHED,
+		STATE_CANCELED
 	};
 
 	VisualOpenFileObject(
@@ -216,13 +233,13 @@ public:
 	VisualOpenFileObject(IN const VisualOpenFileObject&) = delete;
 	VisualOpenFileObject& operator=(IN const VisualOpenFileObject&) = delete;
 
-	std::underlying_type_t<CurrentOpenState>
-	GetCurrentObjectState() const override {
+	IVisualWorkObject::enum_t
+	GetWorkObjectState() const override {
 		TRACE_FUNCTION_PROTO; return OpenDlgState;
 	}
 	std::string_view GetResultString() const {
 		TRACE_FUNCTION_PROTO; 
-		OpenFileResult.c_str(); // ensure null terminator
+		static_cast<void>(OpenFileResult.c_str()); // ensure null terminator
 		return OpenFileResult;
 	}
 
@@ -239,14 +256,14 @@ class VisualLoadImageObject
 	friend class VisualSingularityApp;
 public:
 	enum CurrentLoadState {
-		STATE_ABORTED = -2000,
-		STATE_ERROR,
-
-		STATE_SCHEDULED = 0,
+		STATE_ABORTING = IVisualWorkObject::STATE_ABORTING_CALL,
+		STATE_ABORTED = IVisualWorkObject::STATE_ABORTED_FULLY,
+		STATE_ERROR = IVisualWorkObject::STATE_CALL_ERROR,
+		STATE_SCHEDULED = IVisualWorkObject::STATE_CALL_SCHEDULED,
 		STATE_LOADING_MEMORY,
 		STATE_LAODING_SYMBOLS,
 		STATE_RELOCATING,
-		STATE_FULLY_LOADED,
+		STATE_FULLY_LOADED = IVisualWorkObject::STATE_CALL_FINISHED,
 	};
 
 	VisualLoadImageObject(
@@ -281,8 +298,8 @@ public:
 	}
 
 
-	std::underlying_type_t<CurrentLoadState>
-	GetCurrentObjectState() const override {
+	IVisualWorkObject::enum_t
+	GetWorkObjectState() const override {
 		TRACE_FUNCTION_PROTO; return ImageLoadState;
 	}
 	uint32_t GetPolyXNumber() const {
@@ -295,7 +312,7 @@ public:
 	void AbortImageLoadAsync() const { // This schedules an abort by overriding the state of this object
 									   // The abort is handled by throwing an abort exception from the tracker interface
 		TRACE_FUNCTION_PROTO; 
-		ImageLoadState = STATE_ABORTED;
+		ImageLoadState = STATE_ABORTING;
 		SPDLOG_WARN("Scheduled abort on remote thread, cleaning up asap");
 	}
 
@@ -318,13 +335,12 @@ class VisualSOPassObject :
 	friend class VisualSingularityApp;
 public:
 	enum CurrentSOMPassState {
-		STATE_ABORTED = -2000,
-		STATE_ERROR,
-
-		STATE_SCHEDULED = 0,
+		STATE_ABORTING = IVisualWorkObject::STATE_ABORTING_CALL,
+		STATE_ABORTED = IVisualWorkObject::STATE_ABORTED_FULLY,
+		STATE_ERROR = IVisualWorkObject::STATE_CALL_ERROR,
+		STATE_SCHEDULED = IVisualWorkObject::STATE_CALL_SCHEDULED,
 		
-		
-		STATE_ALL_PASSES_APLIED_DONE,
+		STATE_ALL_PASSES_APLIED_DONE = IVisualWorkObject::STATE_CALL_FINISHED,
 	};
 	enum CodeDiscoveryMode {
 		DISCOVER_USE_HIGHEST_AVAILABLE = 0,
@@ -340,10 +356,6 @@ public:
 		TRACE_FUNCTION_PROTO;
 	}
 
-	std::underlying_type_t<CurrentSOMPassState>
-		GetCurrentObjectState() const override {
-		TRACE_FUNCTION_PROTO; return ProcessingState;
-	}
 
 
 
@@ -352,10 +364,12 @@ public:
 
 	bool EnableMultithreading = false;
 
+	IVisualWorkObject::enum_t
+	GetWorkObjectState() const override {
+		TRACE_FUNCTION_PROTO; return ProcessingState;
+	}
 
 private:
-
-
 	mutable
 	std::atomic<CurrentSOMPassState> ProcessingState;
 	IDisassemblerTracker* DisassmeblerTracker;
@@ -367,24 +381,29 @@ private:
 
 class VisualSingularityApp {
 public:
+	struct ThrowAbortTag : public VisualAppException {
+		ThrowAbortTag()
+			: VisualAppException("Aborted object on call by user dispatch",
+				VisualAppException::STATUS_ABORTED_OBJECT_IN_CALL) {
+			TRACE_FUNCTION_PROTO;
+		}
+	};
 	enum ControlRequest {
 		CWI_OPEN_FILE,
 		CWI_LOAD_FILE,
-		CWI_DO_PROCESSING_FINAL
+		CWI_DO_UNLOAD_IMAGE,
+		CWI_DO_PROCESSING_FINAL,
 	};
 	struct QueueWorkItem {
-		VisualSingularityApp* OwnerController;
-		token_t               ObjectToken;
-
-		ControlRequest ControlCommand;
-		bool           WorkItemhandled;
-
+		VisualSingularityApp*              OwnerController;
+		ControlRequest                     ControlCommand;
 		std::unique_ptr<IVisualWorkObject> WorkingObject;
 	};
 
 	VisualSingularityApp(
-		IN uint32_t NumberOfThreads
+		IN uint32_t NumberOfThreads = 0
 	) {
+		UNREFERENCED_PARAMETER(NumberOfThreads);
 		TRACE_FUNCTION_PROTO;
 		InitializeThreadpoolEnvironment(&ThreadPoolEnvironment);
 		SPDLOG_INFO("Initilialized thread pool for async work");
@@ -398,10 +417,8 @@ public:
 		TRACE_FUNCTION_PROTO;
 
 		const std::lock_guard Lock(ThreadPoolLock);
-		auto TokenForRequest = GenerateGlobalUniqueTokenId();
 		auto& WorkItemEntry = WorkResponseList.emplace_back(QueueWorkItem{
 			.OwnerController = this,
-			.ObjectToken = TokenForRequest,
 			.ControlCommand = CWI_OPEN_FILE,
 			.WorkingObject = std::make_unique<VisualOpenFileObject>(
 				std::move(DialogConfig)) });
@@ -416,10 +433,8 @@ public:
 		TRACE_FUNCTION_PROTO;
 
 		const std::lock_guard Lock(ThreadPoolLock);
-		auto TokenForRequest = GenerateGlobalUniqueTokenId();
 		auto& WorkItemEntry = WorkResponseList.emplace_back(QueueWorkItem{
 			.OwnerController = this,
-			.ObjectToken = TokenForRequest,
 			.ControlCommand = CWI_LOAD_FILE,
 			.WorkingObject = std::move(LoadImageInformation) });
 		QueueEnlistWorkItem(&WorkItemEntry);
@@ -431,10 +446,8 @@ public:
 		TRACE_FUNCTION_PROTO;
 
 		const std::lock_guard Lock(ThreadPoolLock);
-		auto TokenForRequest = GenerateGlobalUniqueTokenId();
 		auto& WorkItemEntry = WorkResponseList.emplace_back(QueueWorkItem{
 			.OwnerController = this,
-			.ObjectToken = TokenForRequest,
 			.ControlCommand = CWI_DO_PROCESSING_FINAL,
 			.WorkingObject = std::move(SOBPassInformation) });
 		QueueEnlistWorkItem(&WorkItemEntry);
@@ -458,21 +471,26 @@ public:
 
 					if (WorkItem.WorkingObject.get() == WorkItemEntry) {
 
-						// Found deque item for object
-						if (WorkItem.WorkItemhandled)
-							return true;
-
-						throw VisualAppException("Tried to free in progress object, illegal",
-							VisualAppException::STATUS_CANNOT_FREE_IN_PROGRESS);
+						// Found deque item for object, determine state
+						auto WorkState = WorkItem.WorkingObject->GetWorkObjectState();	
+						if (WorkState >= IVisualWorkObject::STATE_CALL_SCHEDULED &&
+							WorkState < IVisualWorkObject::STATE_CALL_FINISHED)
+							throw VisualAppException(
+								fmt::format("Tried to free in progress object " ESC_BRIGHTRED"{}",
+									static_cast<const void*>(WorkItemEntry)),
+								VisualAppException::STATUS_CANNOT_FREE_IN_PROGRESS);
+						return true;
 					}
-
 					return false;
 			});
 		if (DequeEntry == WorkResponseList.end())
-			throw VisualAppException("Tried to free unregistered object from pool",
+			throw VisualAppException(
+				fmt::format("Tried to free unregistered object " ESC_BRIGHTRED"{}",
+					static_cast<const void*>(WorkItemEntry)),
 				VisualAppException::STATUS_FREED_UNREGISTERED_OBJ);
 		WorkResponseList.erase(DequeEntry);
-		SPDLOG_INFO("Freed workitem from working pool");
+		SPDLOG_INFO("Freed workitem " ESC_BRIGHTRED"{}" ESC_RESET" from working pool",
+			static_cast<const void*>(WorkItemEntry));
 	}
 
 	static void DispatchAbortCheck() { // TODO: implement
@@ -492,7 +510,9 @@ private:
 		if (!Status) {
 
 			WorkResponseList.pop_back();
-			throw VisualAppException("Failed to enlist a work queue item on the thread pool",
+			throw VisualAppException(
+				fmt::format("Failed to enlist " ESC_BRIGHTRED"{}" ESC_RESET" workitem on the threadpool work queue",
+					static_cast<void*>(WorkItem)),
 				VisualAppException::STATUS_FAILED_QUEUE_WORKITEM);
 		}
 	}
@@ -515,20 +535,19 @@ private:
 				SPDLOG_WARN("Long running function in quick threadpool, failed to created dedicated thread");
 			OpenObject->OpenFileResult = ComOpenFileDialogWithConfig(
 				*static_cast<OpenFileDialogConfig*>(OpenObject));
-			
-			const std::lock_guard Lock(WorkObject->OwnerController->ThreadPoolLock);
-			OpenObject->OpenDlgState = OpenObject->OpenFileResult.empty() ? VisualOpenFileObject::STATE_CANCELED
-				: VisualOpenFileObject::STATE_DIALOG_DONE;
-			WorkObject->WorkItemhandled = true;
 			OpenObject->OpenFileResult.empty() ?
 				SPDLOG_WARN("The user selected to cancel the file selection prompt") :
-				SPDLOG_INFO("User selected \"{}\", for image",
+				SPDLOG_INFO("User selected "ESC_BRIGHTYELLOW"\"{}\""ESC_RESET", for image",
 					OpenObject->OpenFileResult);
+
+			// Set the State of the object, no lock required, state is atomic
+			OpenObject->OpenDlgState = OpenObject->OpenFileResult.empty() ? VisualOpenFileObject::STATE_CANCELED
+				: VisualOpenFileObject::STATE_DIALOG_DONE;
 			break;
 		}
 		case CWI_LOAD_FILE: {
 
-			// Initilalize load and inform threadpool of possibly long running function
+			// Initialize load and inform threadpool of possibly long running function
 			auto LoadObject = static_cast<VisualLoadImageObject*>(WorkObject->WorkingObject.get());
 			LoadObject->ImageLoadState = VisualLoadImageObject::STATE_LOADING_MEMORY;
 			auto Status = CallbackMayRunLong(CallbackInstance);
@@ -561,45 +580,41 @@ private:
 							*static_cast<IImageLoaderHelp*>(TargetImage.get()));
 				}
 
-				// Relocate Image in memory
+				// Relocate Image in memory confirm changes and notify of finished state
 				LoadObject->NumberOfPolyX = TargetImage->ApproximateNumberOfRelocationsInImage();
 				LoadObject->ImageLoadState = VisualLoadImageObject::STATE_RELOCATING;
 				TargetImage->RelocateImageToMappedOrOverrideBase(LoadObject->InfoTracker);
-
-				const std::lock_guard Lock(WorkObject->OwnerController->ThreadPoolLock);
 				LoadObject->ImageLoadState = VisualLoadImageObject::STATE_FULLY_LOADED;
-				WorkObject->WorkItemhandled = true;
 			}
 			catch (const CommonExceptionType& ExceptionInforamtion) {
 
-				const std::lock_guard Lock(WorkObject->OwnerController->ThreadPoolLock);
+				// Do internal cleanup and complete this request
+				SymbolServer.release();
+				TargetImage.release();
 				switch (ExceptionInforamtion.ExceptionTag) {
 				case CommonExceptionType::EXCEPTION_IMAGE_HELP:
-					LoadObject->ImageLoadState = VisualLoadImageObject::STATE_ERROR;
 					SPDLOG_ERROR("The image load failed due to [{}]: \"{}\"",
 						ExceptionInforamtion.StatusCode,
 						ExceptionInforamtion.ExceptionText);
+					LoadObject->ImageLoadState = VisualLoadImageObject::STATE_ERROR;
 					break;
 					
 				case CommonExceptionType::EXCEPTION_COMOLE_EXP:
+					SPDLOG_ERROR("MS DIA failed to load the pdb for "ESC_BRIGHTBLUE"\"{}\"",
+						LoadObject->ImageFile.string());
 					LoadObject->ImageLoadState = VisualLoadImageObject::STATE_ERROR;
 					break;
 
 				case CommonExceptionType::EXCEPTION_VISUAL_APP:
+					SPDLOG_WARN("The ongoing Load "ESC_BRIGHTRED"{}"ESC_RESET" was aborted by callback",
+						static_cast<void*>(WorkObject));
 					LoadObject->ImageLoadState = VisualLoadImageObject::STATE_ABORTED;
-					SPDLOG_WARN("the current ongoing op was aborted by callback");
 					break;
 
 				default:
-					__fastfail(-247628); // TODO: Temporary will be fixed soon
+					__fastfail(static_cast<uint32_t>(-247628)); // TODO: Temporary will be fixed soon
 				}
-
-				// Do cleanup and complete this request
-				WorkObject->WorkItemhandled = true;
-				SymbolServer.release();
-				TargetImage.release();
 			}
-
 			break;
 		}
 
@@ -614,6 +629,10 @@ private:
 
 	std::unique_ptr<ImageHelp>  TargetImage;
 	std::unique_ptr<SymbolHelp> SymbolServer;
+
+
+	std::vector<int>            FunctionTableData;
+
 };
 #pragma endregion
 
@@ -777,8 +796,10 @@ public:
 	) override {
 		TRACE_FUNCTION_PROTO;
 
-		switch (TrackerType) {
-		}
+		//switch (TrackerType) {
+		//
+		//default:
+		//}
 
 		DoCommonAbortChecksAndDispatch();
 		DoWaitTimeInterval();
@@ -838,21 +859,27 @@ void HelpMarker(
 	}
 }
 
+
 class ImGuiSpdLogAdaptor 
 	: public spdlog::sinks::base_sink<std::mutex> {
-	struct SinkContentEntry {
-		int32_t         NewLineIndex;
-
-		bool            LevelIsValid;
-		spdlog::level_t LogLevel;
-		size_t          StartColorRange;
-		size_t          EndColorRange;
-	};
 	using sink_t = spdlog::sinks::base_sink<std::mutex>;
-public:
 
+	class SinkLineContent {
+	public:
+		spdlog::level::level_enum LogLevel; // if n_levels, the message pushed counts to the previous pushed line
+
+		struct ColorDataRanges {
+			AnsiEscapeSequenceTag FormatTag;
+			int32_t               SubStringBegin;
+			int32_t               SubStringEnd;
+		};
+		ImVector<ColorDataRanges> FormattedStringRanges;
+	};
+
+public:
 	void DrawLogWindow(
-		INOUT bool& ShowWindow
+		IN    GLFWwindow* ClipBoardOwner,
+		INOUT bool&       ShowWindow
 	) {
 		TRACE_FUNCTION_PROTO;
 
@@ -869,94 +896,117 @@ public:
 			if (ImGui::Button("Options"))
 				ImGui::OpenPopup("Options");
 			ImGui::SameLine();
-			bool ClearLog = ImGui::Button("Clear");
+			if (ImGui::Button("Clear"))
+				ClearLogBuffers();
 			ImGui::SameLine();
-			bool CopyToClipboard = ImGui::Button("Copy");
+			if (ImGui::Button("Copy"))
+				glfwSetClipboardString(ClipBoardOwner, LoggedContent.c_str());
 			ImGui::SameLine();
+
+			// Filter by log level with cache
 
 			ImGui::Separator();
 			ImGui::BeginChild("scrolling", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
 
-			if (ClearLog)
-				ClearLogBuffers();
-			if (CopyToClipboard)
-				ImGui::LogToClipboard();
-
 			ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
 			const char* buf = LoggedContent.begin();
 			const char* buf_end = LoggedContent.end();
+			const std::lock_guard LogLock(sink_t::mutex_);
 			{
 				
-				ImGuiListClipper clipper;
-				clipper.Begin(LogMetaData.size());
-				while (clipper.Step()) {
+				ImGuiListClipper ViewClipper;
+				ViewClipper.Begin(static_cast<uint32_t>(LogMetaData.size()));
+				while (ViewClipper.Step()) {
 
-					for (int ClipperLineNumber = clipper.DisplayStart;
-						ClipperLineNumber < clipper.DisplayEnd;
+
+					int32_t StylesPushedToStack = 0;
+					for (auto ClipperLineNumber = ViewClipper.DisplayStart;
+						ClipperLineNumber < ViewClipper.DisplayEnd;
 						++ClipperLineNumber) {
 
-
-						if (LogMetaData[ClipperLineNumber].LevelIsValid) {
-
-							// We have to print with color data
-
-
-							// First print text 
-							const char* LineStart = LoggedContent.begin() + 
-								LogMetaData[ClipperLineNumber].NewLineIndex;
-							const char* LineTillColorField = LoggedContent.begin() +
-								LogMetaData[ClipperLineNumber].StartColorRange;
-							ImGui::TextUnformatted(LineStart, LineTillColorField);
-							ImGui::SameLine();
-
-							const ImVec4 LogLevelToColor[]{
-								{ 1,   1, 1, 1 }, // Trace
-								{ 0,   1, 1, 1 }, // Debug
-								{ 0,   1, 0, 1 }, // Info
-								{ 1,   1, 0, 1 }, // Warning
-								{ 1,   0, 0, 1 }, // Error
-								{ 0.5, 0, 0, 1 }, // Critical
-								{ 0,   0, 0, 0 }  // Off
-							};
-							ImGui::PushStyleColor(ImGuiCol_Text, LogLevelToColor[LogMetaData[ClipperLineNumber].LogLevel]);
-
-							const char* EndOfColorField = LoggedContent.begin() +
-								LogMetaData[ClipperLineNumber].EndColorRange;
-
-							ImGui::TextUnformatted(LineTillColorField, EndOfColorField);
-							ImGui::SameLine();
-							ImGui::PopStyleColor();
-							
-							const char* LineEnd = (ClipperLineNumber + 1 < LogMetaData.size()) ?
-								(LoggedContent.begin() + LogMetaData[ClipperLineNumber + 1].NewLineIndex)
-								: LoggedContent.end();
-							ImGui::TextUnformatted(EndOfColorField, LineEnd - 1);
-						}
-						else {
-
+						if (LogMetaData[ClipperLineNumber].LogLevel == spdlog::level::n_levels)
 							ImGui::Indent();
-							const char* LineStart = LoggedContent.begin() +
-								LogMetaData[ClipperLineNumber].NewLineIndex;
-							const char* LineEnd = (ClipperLineNumber + 1 < LogMetaData.size()) ?
-								(LoggedContent.begin() + LogMetaData[ClipperLineNumber + 1].NewLineIndex) 
-								: LoggedContent.end();
-							ImGui::TextUnformatted(LineStart, LineEnd - 1);
-							ImGui::Unindent();
+
+						for (auto i = 0; i < LogMetaData[ClipperLineNumber].FormattedStringRanges.size(); ++i) {
+
+							switch (LogMetaData[ClipperLineNumber].FormattedStringRanges[i].FormatTag) {
+							case FORMAT_RESET_COLORS:
+								ImGui::PopStyleColor(StylesPushedToStack);
+								StylesPushedToStack = 0;
+								break;
+
+							case COLOR_BLACK: 
+							case COLOR_RED: 
+							case COLOR_GREEN: 
+							case COLOR_YELLOW: 
+							case COLOR_BLUE: 
+							case COLOR_MAGENTA: 
+							case COLOR_CYAN: 
+							case COLOR_WHITE: {
+								static const ImVec4 BasicColorsToVec[]{
+									{ 0.0f, 0.0f, 0.0f, 1 }, // COLOR_BLACK
+									{ 0.5f, 0.0f, 0.0f, 1 }, // COLOR_RED
+									{ 0.0f, 0.7f, 0.0f, 1 }, // COLOR_GREEN
+									{ 0.7f, 0.7f, 0.0f, 1 }, // COLOR_YELLOW
+									{ 0.0f, 0.0f, 0.7f, 1 }, // COLOR_BLUE
+									{ 0.7f, 0.0f, 0.7f, 1 }, // COLOR_MAGENTA
+									{ 0.0f, 0.7f, 0.7f, 1 }, // COLOR_CYAN
+									{ 0.7f, 0.7f, 0.7f, 1 }  // COLOR_WHITE
+								};
+								ImGui::PushStyleColor(ImGuiCol_Text,
+									BasicColorsToVec[LogMetaData[ClipperLineNumber].FormattedStringRanges[i].FormatTag - COLOR_BLACK]);
+								++StylesPushedToStack;
+								break;
+							}
+							case COLOR_BRIGHTBLACK: 
+							case COLOR_BRIGHTRED: 
+							case COLOR_BRIGHTGREEN: 
+							case COLOR_BRIGHTYELLOW: 
+							case COLOR_BRIGHTBLUE: 
+							case COLOR_BRIGHTMAGENTA: 
+							case COLOR_BRIGHTCYAN: 
+							case COLOR_BRIGHTWHITE: {
+								static const ImVec4 BrightColorsToVec[]{
+									{ 0, 0, 0, 1 }, // COLOR_BRIGHTBLACK
+									{ 1, 0, 0, 1 }, // COLOR_BRIGHTRED
+									{ 0, 1, 0, 1 }, // COLOR_BRIGHTGREEN
+									{ 1, 1, 0, 1 }, // COLOR_BRIGHTYELLOW
+									{ 0, 0, 1, 1 }, // COLOR_BRIGHTBLUE
+									{ 1, 0, 1, 1 }, // COLOR_BRIGHTMAGENTA
+									{ 0, 1, 1, 1 }, // COLOR_BRIGHTCYAN
+									{ 1, 1, 1, 1 }  // COLOR_BRIGHTWHITE
+								};
+								ImGui::PushStyleColor(ImGuiCol_Text,
+									BrightColorsToVec[LogMetaData[ClipperLineNumber].FormattedStringRanges[i].FormatTag - COLOR_BRIGHTBLACK]);
+								++StylesPushedToStack;
+								break;
+							}}
+
+							auto FormatRangeBegin = LoggedContent.begin() +
+								LogMetaData[ClipperLineNumber].FormattedStringRanges[i].SubStringBegin;
+							auto FormatRangeEnd = LoggedContent.begin() +
+								LogMetaData[ClipperLineNumber].FormattedStringRanges[i].SubStringEnd;
+							ImGui::TextUnformatted(FormatRangeBegin, FormatRangeEnd);
+							if (LogMetaData[ClipperLineNumber].FormattedStringRanges.size() - (i + 1))
+								ImGui::SameLine();
 						}
+
+						if (LogMetaData[ClipperLineNumber].LogLevel == spdlog::level::n_levels)
+							ImGui::Unindent();
 					}
+					ImGui::PopStyleColor(StylesPushedToStack);
 				}
-				clipper.End();
+				ViewClipper.End();
 			}
 			ImGui::PopStyleVar();
 
-			
 			if (EnableAutoScrolling &&
 				ImGui::GetScrollY() >= ImGui::GetScrollMaxY())
 				ImGui::SetScrollHereY(1.0f);
 
 			ImGui::EndChild();
-			ImGui::End();
 		}
+		ImGui::End();
 	}
 
 	void ClearLogBuffers(
@@ -975,9 +1025,11 @@ public:
 	}
 
 protected:
+
+	// Writing version 2, this will accept ansi escape sequences for colors
 	void sink_it_(
 		IN const spdlog::details::log_msg& LogMessage
-	) {
+	) noexcept {
 		// This is all protected by the base sink under a mutex
 		TRACE_FUNCTION_PROTO;
 
@@ -987,41 +1039,113 @@ protected:
 			LogMessage, FormattedBuffer);
 		std::string FormattedText = fmt::to_string(FormattedBuffer);
 		
+		// Process string by converting the color range passed to an escape sequence first,
+		// yes may not be the nicest way of doing this but its way easier to process later.
+		const char* ColorToEscapeSequence[]{
+			ESC_BRIGHTMAGENTA,
+			ESC_CYAN,
+			ESC_BRIGHTGREEN,
+			ESC_BRIGHTYELLOW,
+			ESC_BRIGHTRED,
+			ESC_RED
+		};
+		FormattedText.insert(LogMessage.color_range_start,
+			ColorToEscapeSequence[LogMessage.level]);
+		FormattedText.insert(LogMessage.color_range_end + 5,
+			"\x1b[0m");
+
+		// Parse formatted logged string for ansi escape sequences
 		auto OldTextBufferSize = LoggedContent.size();
+		SinkLineContent MessageData2 {
+			LogMessage.level
+		};
+		AnsiEscapeSequenceTag LastSequenceTagSinceBegin = FORMAT_RESET_COLORS;
+		
+		// Prematurely filter out immediately starting non default formats,
+		// and then enter the main processing loop
+		switch (FormattedText[0]) {
+		case '\x1b':
+		case '\n':
+			break;
+
+		default: {
+
+			SinkLineContent::ColorDataRanges FormatPush{
+				LastSequenceTagSinceBegin,
+				OldTextBufferSize,
+			};
+			MessageData2.FormattedStringRanges.push_back(FormatPush);
+		}}
+		for (auto i = 0; i < FormattedText.size(); ++i)
+			switch (FormattedText[i]) {
+			case '\n': {
+
+				// Handle new line bullshit, spdlog will terminate any logged message witha  new line
+				// we can also assume this may not be the last line, so we continue the previous sequence into
+				// the next logically text line if necessary and reconfigure pushstate
+				if (MessageData2.FormattedStringRanges.size())
+					MessageData2.FormattedStringRanges.back().SubStringEnd = i + OldTextBufferSize;
+				LogMetaData.push_back(MessageData2);
+				MessageData2.LogLevel = spdlog::level::n_levels;
+				MessageData2.FormattedStringRanges.clear();
+
+				// Continue previous escape sequences pushed in the previous line
+				SinkLineContent::ColorDataRanges FormatPush{
+					LastSequenceTagSinceBegin,
+					i + OldTextBufferSize + 1
+				};
+				MessageData2.FormattedStringRanges.push_back(FormatPush);
+				break;
+			}
+
+			case '\x1b': {
+
+				// Handle ansi escape sequence, convert textual to operand
+				if (FormattedText[i + 1] != '[')
+					throw std::runtime_error("Invalid ansi escape sequence passed");
+
+				size_t PositionProcessed = 0;
+				auto EscapeSequenceCode = static_cast<AnsiEscapeSequenceTag>(
+					std::stoi(&FormattedText[i + 2],
+						&PositionProcessed)); // this may throw, in which case we let it pass down
+
+				if (FormattedText[i + 2 + PositionProcessed] != 'm')
+					throw std::runtime_error("Invalid ansi escape sequence operand was passed");
+				++PositionProcessed;
+				LastSequenceTagSinceBegin = EscapeSequenceCode;
+
+				SinkLineContent::ColorDataRanges FormatPush{
+					EscapeSequenceCode, 
+					i + OldTextBufferSize
+				};
+				if (MessageData2.FormattedStringRanges.size())
+					MessageData2.FormattedStringRanges.back().SubStringEnd = FormatPush.SubStringBegin;
+				MessageData2.FormattedStringRanges.push_back(FormatPush);
+
+				// Now the escape code has to be removed from the string,
+				// the iterator has to be kept stable, otherwise the next round could skip a char
+				FormattedText.erase(FormattedText.begin() + i--,
+					FormattedText.begin() + (i + 2 + PositionProcessed));
+			}}
+
+		// Append processed string to log text buffer
 		LoggedContent.append(FormattedText.c_str(),
 			FormattedText.c_str() + FormattedText.size());
-
-
-		SinkContentEntry MessageMeta{
-			OldTextBufferSize,
-			true,
-			LogMessage.level,
-			LogMessage.color_range_start + OldTextBufferSize,
-			LogMessage.color_range_end + OldTextBufferSize
-		};
-		LogMetaData.push_back(MessageMeta);
-		for (auto NewTextBufferSize = LoggedContent.size();
-			OldTextBufferSize < NewTextBufferSize;
-			++OldTextBufferSize)
-			if (LoggedContent[OldTextBufferSize] == '\n') {
-
-				SinkContentEntry MessageMeta{
-					OldTextBufferSize + 1,
-					false
-				};
-				LogMetaData.push_back(MessageMeta);
-			}
-		LogMetaData.pop_back(); // very ugly way to inject entries
 	}
 	void flush_() { TRACE_FUNCTION_PROTO; }
 
 private:
 	// Using faster more efficient replacements of stl types for rendering
 	ImGuiTextBuffer            LoggedContent;
-	ImVector<SinkContentEntry> LogMetaData;
+	std::vector<SinkLineContent> LogMetaData; // Cannot use ImVetctor here as the type is not trivially copyable 
+	                                          // the type has to be moved into, slightly more expensive
+	                                          // but overall totally fine, at least no weird hacks
+	ImVector<int32_t> FilteredView;           // A filtered array of indexes into the LogMetaData vector
+	                                          // this view is calculated once any filter changes
+	bool EnableAutoScrolling = true;
 
+	// Previous Frame's filterdata, if any of these change to the new values the filter has to be recalculated
 
-	bool EnableAutoScrolling;
 };
 
 
@@ -1037,11 +1161,18 @@ enum EntryPointReturn : int32_t {
 
 	STATUS_SUCCESS = 0,
 };
-export int32_t main(
-		  int   argc,
-	const char* argv[]
+export int32_t WinMain(
+	IN  HINSTANCE hInstance,
+	OPT HINSTANCE hPrevInstance,
+	IN  LPSTR     lpCmdLine,
+	IN  int32_t   nShowCmd
 ) {
+	UNREFERENCED_PARAMETER(hInstance);
+	UNREFERENCED_PARAMETER(hPrevInstance);
+	UNREFERENCED_PARAMETER(lpCmdLine);
+	UNREFERENCED_PARAMETER(nShowCmd);
 	TRACE_FUNCTION_PROTO;
+	// AttachConsole(ATTACH_PARENT_PROCESS);
 
 	// Instantiate prerequisites such as loggers and external libraries
 	// ConsoleModifier ScopedConsole;
@@ -1125,19 +1256,26 @@ export int32_t main(
 	auto VisualLogger = static_cast<ImGuiSpdLogAdaptor*>(VisualSinkObject.get());
 	enum ImmediateProgramPhase {
 		PHASE_NEUTRAL_STARTUP = 0,
-
 		STATE_WAITING_INPUTFILE_DLG,
 		STATE_WAITING_PDBFILE_DLG,
-		// STATE_WAITING_OUTPUTFILE_DLG,
-		
 		STATE_IMAGE_LOADING_MEMORY,
 		STATE_IMAGE_LOADED_WAITING,
-
 		STATE_IMAGE_PROCESSING_AUTO,
-
-
+		STATE_IMAGE_WAS_PROCESSED
 
 	} ProgramPhase = PHASE_NEUTRAL_STARTUP;
+	
+	
+	
+	
+	// SPDLOG_INFO("Test print with newline\nand "ESC_MAGENTA"magente colored text"ESC_RESET" going back to normal");
+	// SPDLOG_TRACE("This is a test print "ESC_BRIGHTBLUE"with bright blue text\nwrapping around lines,\nand automatic color reset");
+	// SPDLOG_DEBUG("Debug messages with default color");
+	// SPDLOG_WARN("A working with "ESC_RED"dangerous red text"ESC_RESET);
+	// SPDLOG_ERROR("Uhh a "ESC_BRIGHTRED"Error"ESC_RESET" occured!!");
+	// SPDLOG_CRITICAL("Well even worse now\n\n with even more errors...");
+
+
 
 	// Primary render loop, this takes care of all the drawing and user io, it takes full control of the backend
 	try {
@@ -1185,25 +1323,22 @@ export int32_t main(
 					case STATE_WAITING_PDBFILE_DLG:
 
 						// Handle last requested IFileOpenDialog
-						switch (LastFileOpenDialog->GetCurrentObjectState()) {
-						case VisualOpenFileObject::STATE_ERROR:
+						switch (LastFileOpenDialog->GetWorkObjectState()) {
+						case VisualOpenFileObject::STATE_COM_ERROR:
 							LastErrorColor = ImVec4(1, 0, 0, 1);
 							LastErrorMessage = "Com interface failed to select file";
 							break;
 
 						case VisualOpenFileObject::STATE_DIALOG_DONE:
-
 							if (!LastFileOpenDialog->GetResultString().empty())
 								strcpy(std::array{ InputFilePath, PathToPdb }
 									[ProgramPhase - STATE_WAITING_INPUTFILE_DLG],
 									LastFileOpenDialog->GetResultString().data());
 						}
-						if (LastFileOpenDialog->GetCurrentObjectState() < 0 ||
-							LastFileOpenDialog->GetCurrentObjectState() ==
-							VisualOpenFileObject::STATE_DIALOG_DONE) {
+						if (LastFileOpenDialog->GetWorkObjectState() < IVisualWorkObject::STATE_CALL_SCHEDULED ||
+							LastFileOpenDialog->GetWorkObjectState() >= IVisualWorkObject::STATE_CALL_FINISHED) {
 
-							// BUG: this has some weird ub association, somehow a finished object may crash here
-							// ig i shoudl verify locks in dispatch
+							// Close the dialog dispatch object
 							SingularityApiController.FreeWorkItemFromPool(LastFileOpenDialog);
 							LastFileOpenDialog = nullptr;
 							ProgramPhase = PHASE_NEUTRAL_STARTUP;
@@ -1213,14 +1348,14 @@ export int32_t main(
 					case STATE_IMAGE_LOADING_MEMORY:
 
 						// Check processing state for errors and reset
-						switch (LoaderObjectState->GetCurrentObjectState()) {
+						switch (LoaderObjectState->GetWorkObjectState()) {
 						case VisualLoadImageObject::STATE_ABORTED:
 							LastErrorColor = ImVec4(1, 1, 0, 1);
 							break;
 						case VisualLoadImageObject::STATE_ERROR:
 							LastErrorColor = ImVec4(1, 0, 0, 1);
 						}
-						if (LoaderObjectState->GetCurrentObjectState() < 0) {
+						if (LoaderObjectState->GetWorkObjectState() < IVisualWorkObject::STATE_CALL_SCHEDULED) {
 
 							LastErrorMessage = LoaderObjectState->GetExceptionReport()->ExceptionText;
 							ProgramPhase = PHASE_NEUTRAL_STARTUP;
@@ -1379,7 +1514,7 @@ export int32_t main(
 
 					case STATE_IMAGE_LOADING_MEMORY: // The backend is loading the file, we can print load information
 
-						switch (LoaderObjectState->GetCurrentObjectState()) {
+						switch (LoaderObjectState->GetWorkObjectState()) {
 						case VisualLoadImageObject::STATE_SCHEDULED:
 							SelectionStateText = "File load is being scheduled...";
 							GlobalProgressOverlay = LoadWithPdb ? "0 / 3" : "0 / 2";
@@ -1444,7 +1579,6 @@ export int32_t main(
 					}
 
 
-					ImGui::TextUnformatted(SelectionStateText);
 					ImGui::ProgressBar(GlobalProgress,
 						ImVec2(-FLT_MIN, 0),
 						GlobalProgressOverlay);
@@ -1456,6 +1590,7 @@ export int32_t main(
 						SubFrameProgressOverlay.c_str());
 					ImGui::SameLine();
 					ImGui::Text("SubFrame");
+					ImGui::TextUnformatted(SelectionStateText);
 				}
 				ImGui::Separator();
 
@@ -1529,7 +1664,11 @@ export int32_t main(
 
 
 
-
+				static bool EnableLogView = true;
+				ImGui::Checkbox("Show Logger", &EnableLogView);
+				if (EnableLogView)
+					VisualLogger->DrawLogWindow(PrimaryViewPort, EnableLogView);
+				ImGui::SameLine();
 				ImGui::Checkbox("Enable DemoWindow", &EnableImguiDemoWindow);
 				ImGui::Text("Application average %.3f ms/frame (%.1f FPS)",
 					1000.0f / ImGui::GetIO().Framerate,
@@ -1538,10 +1677,7 @@ export int32_t main(
 			ImGui::End();
 
 
-			static bool EnableLogView = true;
-			if (EnableLogView)
-				VisualLogger->DrawLogWindow(EnableLogView);
-
+			
 
 
 			// Rendering imgui and copying to view port
