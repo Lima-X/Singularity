@@ -3,9 +3,8 @@
 // Has to be included into every single module file making use of any of the support libraries
 #pragma once
 
-
+#pragma region Singularity parameter annotations
 // Optional function parameter annotations
-#pragma region Singularity annotations
 #ifndef IN
 #define IN
 #endif
@@ -20,13 +19,14 @@
 #endif
 #pragma endregion
 
-
+#pragma region Disabled warnings and other pragmas
 // Disable anonymous class type warning, supported by all major compilers
 #pragma warning(disable : 4201)
 
+#pragma endregion
 
-// Disable specific API sets to reduce header size
 #pragma region Import and configure windows.h
+// Disable specific API sets to reduce header size
 //	#define NOGDICAPMASKS     // CC_*, LC_*, PC_*, CP_*, TC_*, RC_
 	#define NOVIRTUALKEYCODES // VK_*
 //	#define NOWINMESSAGES     // WM_*, EM_*, LB_*, CB_*
@@ -75,39 +75,46 @@
 // #define WIN32_NO_STATUS
 #include <Windows.h>
 // #undef WIN32_NO_STATUS
-#pragma endregion
+
 // #include <winternl.h>
 // #include <ntstatus.h>
 #include <atlbase.h>
 #include <timeapi.h>
 
+#pragma endregion
+
+#pragma region LibC and STL base includes
 // Configure base includes for shared base and libc
 #define _CRT_SECURE_NO_WARNINGS
-#include <utility>
+#include <intrin.h>
 #include <memory>
 #include <string>
-#include <intrin.h>
+#include <utility>
 
+#pragma endregion
 
+#pragma region Import external dependencies
 // Configure and import external legacy libraries
 #ifndef NDEBUG
 #define SPDLOG_ACTIVE_LEVEL SPDLOG_LEVEL_TRACE
 #else
-#define SPDLOG_ACTIVE_LEVEL SPDLOG_LEVEL_INFO
+#define SPDLOG_ACTIVE_LEVEL SPDLOG_LEVEL_DEBUG
 #endif
 #define SPDLOG_LEVEL_NAMES { "TRACE", "DEBUG", "INFO", "WARNING", "ERROR", "FATAL", "OFF" }
 #define SPDLOG_FMT_EXTERNAL
 #include <spdlog/spdlog.h>
-#include <spdlog/sinks/stdout_color_sinks.h>
 
 extern "C" {
 #include <xed/xed-interface.h>
 }
+#pragma endregion
 
-// Special logging functionalities 
+#pragma region Logging macros and enums
+// Special function trace logger insert/implant, use this in every functions head.
+// Currently does nothing, to be implemented.
 #define TRACE_FUNCTION_PROTO static_cast<void>(0)
 
-#define TO_VALUE_STRING(Value) #Value
+// Define and declare the different types of supported logging escape sequences
 #define ESC_COLOR(Color) "\x1b["#Color"m"
 enum AnsiEscapeSequenceTag : int32_t {
 	FORMAT_RESET_COLORS = 0,
@@ -145,13 +152,20 @@ enum AnsiEscapeSequenceTag : int32_t {
 #define ESC_BRIGHTMAGENTA "\x1b[95m"
 #define ESC_BRIGHTCYAN    "\x1b[96m"
 #define ESC_BRIGHTWHITE   "\x1b[97m"
-#define SPDLOG_SINGULARITY_SMALL_PATTERN "[ %^%=l%$ : "ESC_YELLOW"%t"ESC_RESET" ] %v"
 
+// Define the general logger pattern used by the library
+#define SPDLOG_SINGULARITY_SMALL_PATTERN \
+	"[ %^%=l%$ : "ESC_YELLOW"%t"ESC_RESET" ] %v"
+#pragma endregion
 
+#pragma region Singularity types and helpers
 // Legacy style type helpers
 #define OFFSET_OF offsetof
-#define PAGE_SIZE 4096
-#define PAGE_ALLOCATION_GRANULARITY 65536
+enum {
+	PAGE_SIZE = 4096,
+	LARGE_PAGE = 2097152,
+	PAGE_GRANULARITY = 65536,
+};
 
 // Project specific types with special meaning
 using ulong_t = unsigned long;
@@ -161,9 +175,11 @@ using byte_t = uint8_t;                // Type used to store arbitrary data in t
 using rva_t = long_t;                  // Type used to describe a 31bit image relative offset, anything negative is invalid
 using disp_t = long_t;                 // Type used to represent a 32bit displacement
 using token_t = size_t;                // Type used for tokenized ids, each token is unique to in the process lifetime
+#pragma endregion
 
 #pragma region Active template library components
-#pragma region Smart pointer abstractions for VirtualAlloc
+
+#pragma region Smartpointer abstractions for VirtualAlloc
 class VirtualDeleter {
 public:
 	void operator()(
@@ -200,6 +216,7 @@ public:
 			Win32PageProtection);
 	}
 };
+
 template<template<typename, class> class T>
 VirtualPointer<T>
 MakeSmartPointerWithVirtualAlloc(
@@ -228,11 +245,9 @@ public:
 		TRACE_FUNCTION_PROTO; return static_cast<const T&>(*this);
 	}
 };
-
-
-
 #pragma endregion
 
+#pragma region Singularitys common exception type
 class CommonExceptionType {
 public:
 	using UnderlyingType = int32_t;
@@ -260,6 +275,7 @@ public:
 	const UnderlyingType   StatusCode;
 	const ExceptionTypeTag ExceptionTag;
 };
+#pragma endregion
 
 #pragma region Unicode and partial-utf8/ansi conversions
 using UnicodeString = std::wstring;
@@ -314,12 +330,12 @@ inline std::string ConvertUnicodeToAnsi(
 }
 #pragma endregion
 
-inline token_t GenerateGlobalUniqueTokenId() {
+inline token_t GenerateGlobalUniqueTokenId() { // Generates a global token in a thread safe manner, 
+											   // the implementation is free to change at any time
 	TRACE_FUNCTION_PROTO;
 
 	static std::mutex TokenGenLock;
 	std::lock_guard ScopedLock(TokenGenLock);
-
 	static token_t InitialToken = 0;
 	return ++InitialToken;
 }

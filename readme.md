@@ -49,6 +49,9 @@ msbuild .\Singularity\Singularity.sln -p:Configuration=Executable;Platform=x64Re
     - Allows for multiple custom passes to be applied on a low level IR
     - Multithreading capable, actual multihreading support has to be provided by implementor
     - High memory efficiency, the framework tries to be low on memory allocations
+    - MS-DIA driven symbol parser, used to more accurately lift the image (if pdb is available)
+    - Recursive descent driven disassembler engine
+    - Low level and highly universla cfg based IR with plenty of meta data
 
 ## Decompiler heuristics support list
 

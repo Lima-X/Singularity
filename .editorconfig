@@ -1,0 +1,12 @@
+# Singularity obfuscation Framework's editorconfig file, this is for github mostly
+root = true
+
+# For any file in this project the following should apply
+[*]
+indent_style = tab
+indent_size = 4
+tab_width = 4
+end_of_file = crlf
+charset = utf-8
+trim_trailing_whitespace = true
+insert_final_newline = true

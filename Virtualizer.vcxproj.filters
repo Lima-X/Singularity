@@ -18,16 +18,16 @@
     <ClCompile Include="ImageHelp.ixx">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="VirtualizerCore.ixx">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="SymbolHelp.ixx">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="DisassemblerEngine.ixx">
+    <ClCompile Include="ImguiImpl.ixx">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="ImGuiImplementation.cpp">
+    <ClCompile Include="DisasmEngine.ixx">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="VisualSoF.ixx">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

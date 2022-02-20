@@ -64,8 +64,10 @@ public:
 		// Load program debug database directly through path
 		auto PdbExeFileName2 = ConvertAnsiToUnicode(PdbExeFileName);
 		ComResult = DiaSource->loadDataFromPdb(PdbExeFileName2.c_str());
+		// ComResult = -1;
 		if (FAILED(ComResult)) {
 
+			DiaSource.Release();
 			// Failed to open file, possibly not a PDB, try to open it as an executable image?
 			// The path was not a pdb ?, try to load it as an executable			
 			
@@ -91,6 +93,23 @@ public:
 		if (FAILED(ComResult))
 			throw std::runtime_error("failed to load pdb data, open dia session, and load symbls");
 	}
+	~SymbolHelp() {
+		TRACE_FUNCTION_PROTO;
+
+		// BUG: unloading a file doesnt seem to release the file handle when symbols are loaded, 
+		//      idk why yet, theoratically this should be treated by the smart pointers
+
+		// BUG: EDIT: seems to be actually msdia, and still no idea why, its retarded that i have to close the file after reading it
+		//            just to access it with msdia anyways, so im just gonna fuck of the loadDataForExe api support
+		//            and locate the fucking pdb file myself, cba to fucking fix their tools
+		
+		// EDIT: the leak is caused by a failing call to loadDataFormPdb, this basically result in a ReadOnly handle leak, 
+		//       this bug wasnt noticed for a long time so good me has to rewrite a good few chunks here, such as:
+		//       The Constructors of this class, as well as the Reject mechanism in ImageHelp.ixx as thats obsolete now,
+		//       being a pure workaround for what i deemed was a stupid design choice
+
+	}
+
 	void InstallPdbFileMappingVirtualAddress(
 		IN const byte_t* VirtualImageBase
 	) {

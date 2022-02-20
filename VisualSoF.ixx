@@ -1,4 +1,4 @@
-// Project core, this implements the combination of all other modules into the virtulaizer controller
+// Project core, this implements the combination of all other modules into the virtualizer controller
 //
 
 #include "VirtualizerBase.h"
@@ -27,36 +27,9 @@ using namespace std::literals::chrono_literals;
 namespace chrono = std::chrono;
 namespace filesystem = std::filesystem;
 
-
 #pragma region Visual mode interface
-
-// This defines a base interface type that every async queue object must inherit from
-class IVisualWorkObject {
-public:
-	virtual ~IVisualWorkObject() = 0;	
-	using enum_t = int32_t;
-	enum WorkStateBase : enum_t {       // All abstracts of this interface must implement these state enums,
-		                                 // they are used to determine the current state of the abstract object.
-		                                 // Failing to implement them will result in undfined behaviour,
-		                                 // the implementor can freely add other object states later, these are required.
-		OPT STATE_ABORTING_CALL = -2000, // The async call was schedule with an abort, the abort is in progress
-		OPT STATE_ABORTED_FULLY,         // The call finished its abort, the object was effectively "handled" by dispatch
-		    STATE_CALL_ERROR,            // An error occurred during a async call, the object may communicate more info
-		                                 // about the error in a object specific way.
-										 // All values after here indicate implementation specific errors
-
-		    STATE_CALL_SCHEDULED = 0,    // The object is currently scheduled and waiting to be serviced
-			                             // All values after here indicate ongoing handling to dispatch
-
-		    STATE_CALL_FINISHED = 2000,  // The async object call was fully handled by dispatch
-			                             // All values after here indicate successful handling to dispatch
-	};
-	virtual enum_t GetWorkObjectState() const = 0;
-};
-IVisualWorkObject::~IVisualWorkObject() {
-	TRACE_FUNCTION_PROTO;
-}
-
+#pragma region Visual mode utilities
+// A basic exception wrapper for dispatching gui / controller related exceptions
 class VisualAppException
 	: public CommonExceptionType {
 public:
@@ -79,6 +52,54 @@ public:
 	}
 };
 
+// This defines a base interface type that every async queue object must inherit from
+class IVisualWorkObject {
+	struct ThrowAbortTag : public VisualAppException {
+		ThrowAbortTag()
+			: VisualAppException("Aborted object on call by user dispatch",
+				VisualAppException::STATUS_ABORTED_OBJECT_IN_CALL) {
+			TRACE_FUNCTION_PROTO;
+		}
+	};
+	friend class VisualSingularityApp;
+
+public:
+	IVisualWorkObject() = default;
+	virtual ~IVisualWorkObject() = 0;
+	IVisualWorkObject(IN const IVisualWorkObject&) = delete;
+	IVisualWorkObject& operator=(IN const IVisualWorkObject&) = delete;
+
+	using enum_t = int32_t;
+	enum WorkStateBase : enum_t {        // All abstracts of this interface must implement these state enums,
+										 // they are used to determine the current state of the abstract object.
+										 // Failing to implement them will result in undfined behaviour,
+										 // the implementor can freely add other object states later, these are required.
+		OPT STATE_ABORTING_CALL = -2000, // The async call was schedule with an abort, the abort is in progress
+		OPT STATE_ABORTED_FULLY,         // The call finished its abort, the object was effectively "handled" by dispatch
+			STATE_CALL_ERROR,            // An error occurred during a async call, the object may communicate more info
+										 // about the error in a object specific way.
+										 // All values after here indicate implementation specific errors
+
+			STATE_CALL_SCHEDULED = 0,    // The object is currently scheduled and waiting to be serviced
+										 // All values after here indicate ongoing handling to dispatch
+
+			STATE_CALL_FINISHED = 2000,  // The async object call was fully handled by dispatch
+										 // All values after here indicate successful handling to dispatch
+	};
+	virtual enum_t GetWorkObjectState() const = 0;
+
+	void DispatchAbortCheck() { // Dispatches an abort exception in case the object should be trashed
+								// This will unwind back to the dispatcher that will then catch
+								// said exception, and undo the objects work returning it in a aborted state
+		TRACE_FUNCTION_PROTO;
+		if (GetWorkObjectState() == STATE_ABORTING_CALL)
+			throw ThrowAbortTag();
+	}
+};
+IVisualWorkObject::~IVisualWorkObject() {
+	TRACE_FUNCTION_PROTO;
+}
+#pragma endregion
 
 #pragma region COM OpenFileDialog
 // Highly inefficient and horribly ugly shitty code, but its user driven anyways...
@@ -210,6 +231,7 @@ std::string ComOpenFileDialogWithConfig(
 }
 #pragma endregion
 
+#pragma region VisualSingularity task objects
 class VisualOpenFileObject 
 	: public IVisualWorkObject,
 	  public OpenFileDialogConfig {
@@ -230,9 +252,6 @@ public:
 		TRACE_FUNCTION_PROTO;
 	}
 
-	VisualOpenFileObject(IN const VisualOpenFileObject&) = delete;
-	VisualOpenFileObject& operator=(IN const VisualOpenFileObject&) = delete;
-
 	IVisualWorkObject::enum_t
 	GetWorkObjectState() const override {
 		TRACE_FUNCTION_PROTO; return OpenDlgState;
@@ -244,6 +263,23 @@ public:
 	}
 
 private:
+	void DoOpenFileProcessObject() {
+		TRACE_FUNCTION_PROTO;
+
+		// Process IFileOpenDialog async in object
+		OpenDlgState = VisualOpenFileObject::STATE_OPENING;
+		OpenFileResult = ComOpenFileDialogWithConfig(
+			*static_cast<OpenFileDialogConfig*>(this));
+		OpenFileResult.empty() ?
+			SPDLOG_WARN("The user selected to cancel the file selection prompt") :
+			SPDLOG_INFO("User selected "ESC_BRIGHTYELLOW"\"{}\""ESC_RESET", for image",
+				OpenFileResult);
+
+		// Set the State of the object, no lock required, state is atomic
+		OpenDlgState = OpenFileResult.empty() ? VisualOpenFileObject::STATE_CANCELED
+			: VisualOpenFileObject::STATE_DIALOG_DONE;
+	}
+
 	// The result string is not protected by any lock, 
 	// it assumes that it will be set by the worker 
 	// and will be only be read by multiple threads if at all
@@ -263,7 +299,9 @@ public:
 		STATE_LOADING_MEMORY,
 		STATE_LAODING_SYMBOLS,
 		STATE_RELOCATING,
+		STATE_UNLOADING,
 		STATE_FULLY_LOADED = IVisualWorkObject::STATE_CALL_FINISHED,
+		STATE_FULLY_UNLOADED
 	};
 
 	VisualLoadImageObject(
@@ -278,26 +316,6 @@ public:
 		TRACE_FUNCTION_PROTO;
 	}
 	
-	// Disallow copying of this object, the object must be moved,
-	// as this has strict ownership semantics due to multi threading badness
-	VisualLoadImageObject(IN const VisualLoadImageObject&) = delete;
-	VisualLoadImageObject& operator=(IN const VisualLoadImageObject&) = delete;
-	VisualLoadImageObject(IN VisualLoadImageObject&& Other) {
-		TRACE_FUNCTION_PROTO; this->operator=(std::move(Other));
-	}
-	VisualLoadImageObject& operator=(IN VisualLoadImageObject&& Other) {
-		TRACE_FUNCTION_PROTO;
-		ExitExceptionCopy = std::move(Other.ExitExceptionCopy);
-		ImageLoadState.store(Other.ImageLoadState);
-		NumberOfPolyX.store(Other.NumberOfPolyX);
-		InfoTracker = Other.InfoTracker;
-		ImageFile = std::move(Other.ImageFile);
-		PdbFile = std::move(Other.PdbFile);
-		DisableSymbolServer = Other.DisableSymbolServer;
-		return *this;
-	}
-
-
 	IVisualWorkObject::enum_t
 	GetWorkObjectState() const override {
 		TRACE_FUNCTION_PROTO; return ImageLoadState;
@@ -317,6 +335,70 @@ public:
 	}
 
 private:
+	void DoLoadFileAsyncProcessing() {
+		TRACE_FUNCTION_PROTO;
+
+		// Try to load the image, the path is assumed to be checked before passing,
+		// ImageLoader will "check" it regardless, as in not being able to open it.
+		try {
+			TargetImage = std::make_unique<ImageHelp>(ImageFile.string());
+			TargetImage->MapImageIntoMemory(InfoTracker);
+
+			// Check if we can try to load symbols
+			if (!DisableSymbolServer) {
+
+				// Decide how to load the pdb dependent on how the path is set
+				ImageLoadState = VisualLoadImageObject::STATE_LAODING_SYMBOLS;
+				TargetImage->RejectFileCloseHandles();
+				if (!PdbFile.empty()) {
+
+					SymbolServer = std::make_unique<SymbolHelp>(
+						PdbFile.string());
+					SymbolServer->InstallPdbFileMappingVirtualAddress(
+						TargetImage->GetImageFileMapping());
+				}
+				else
+					SymbolServer = std::make_unique<SymbolHelp>(
+						*static_cast<IImageLoaderHelp*>(TargetImage.get()));
+			}
+
+			// Relocate Image in memory confirm changes and notify of finished state
+			NumberOfPolyX = TargetImage->ApproximateNumberOfRelocationsInImage();
+			ImageLoadState = VisualLoadImageObject::STATE_RELOCATING;
+			TargetImage->RelocateImageToMappedOrOverrideBase(InfoTracker);
+			ImageLoadState = VisualLoadImageObject::STATE_FULLY_LOADED;
+		}
+		catch (const CommonExceptionType& ExceptionInforamtion) {
+
+			// Do internal cleanup and complete this request
+			SymbolServer.release();
+			TargetImage.release();
+			switch (ExceptionInforamtion.ExceptionTag) {
+			case CommonExceptionType::EXCEPTION_IMAGE_HELP:
+				SPDLOG_ERROR("The image load failed due to [{}]: \"{}\"",
+					ExceptionInforamtion.StatusCode,
+					ExceptionInforamtion.ExceptionText);
+				ImageLoadState = VisualLoadImageObject::STATE_ERROR;
+				break;
+
+			case CommonExceptionType::EXCEPTION_COMOLE_EXP:
+				SPDLOG_ERROR("MS DIA failed to load the pdb for "ESC_BRIGHTBLUE"\"{}\"",
+					ImageFile.string());
+				ImageLoadState = VisualLoadImageObject::STATE_ERROR;
+				break;
+
+			case CommonExceptionType::EXCEPTION_VISUAL_APP:
+				SPDLOG_WARN("The ongoing Load " ESC_BRIGHTRED"{}" ESC_RESET" was aborted by callback",
+					static_cast<void*>(this));
+				ImageLoadState = VisualLoadImageObject::STATE_ABORTED;
+				break;
+
+			default:
+				__fastfail(static_cast<uint32_t>(-247628)); // TODO: Temporary will be fixed soon
+			}
+		}
+	}
+
 	std::unique_ptr<CommonExceptionType>  ExitExceptionCopy; // under some states this maybe valid and contains exact information
 															 // as to why the load could have failed
 	mutable 
@@ -324,22 +406,37 @@ private:
 	std::atomic_uint32_t          NumberOfPolyX;  // STATE_LOADING_MEMORY: NumberOfSections in image
 												  // STATE_RELOCATING:     NumberOfRelocations in image
 
-	IImageLoaderTracker* InfoTracker; // Datatracker reference interface pointer, this is hosted by another instance
-	filesystem::path     ImageFile;
+	std::unique_ptr<ImageHelp>  TargetImage;  // Containers for the image and symbols, if available
+	std::unique_ptr<SymbolHelp> SymbolServer;
+
+	IImageLoaderTracker* InfoTracker;         // Datatracker reference interface pointer, this is hosted by another instance
+	filesystem::path     ImageFile;           // Image and pdb file names to load (pdb only if explicit)
 	filesystem::path     PdbFile;
-				bool     DisableSymbolServer;
+				bool     DisableSymbolServer; // Specifies whether or not the loader should not load the pdb if regardeless of availability
 };
 
 class VisualSOPassObject :
 	public IVisualWorkObject {
 	friend class VisualSingularityApp;
 public:
+	class FunctionTableEntry {
+		byte_t* FunctionAddress;
+		size_t  FunctionSize;
+
+		std::unique_ptr<ControlFlowGraph> FunctionCfg;
+
+		std::mutex FunctionLock;
+	};
+
+
 	enum CurrentSOMPassState {
 		STATE_ABORTING = IVisualWorkObject::STATE_ABORTING_CALL,
 		STATE_ABORTED = IVisualWorkObject::STATE_ABORTED_FULLY,
 		STATE_ERROR = IVisualWorkObject::STATE_CALL_ERROR,
 		STATE_SCHEDULED = IVisualWorkObject::STATE_CALL_SCHEDULED,
 		
+		STATE_PROCESSING,
+
 		STATE_ALL_PASSES_APLIED_DONE = IVisualWorkObject::STATE_CALL_FINISHED,
 	};
 	enum CodeDiscoveryMode {
@@ -356,42 +453,41 @@ public:
 		TRACE_FUNCTION_PROTO;
 	}
 
-
-
-
-	VisualSOPassObject(IN const VisualSOPassObject&) = delete;
-	VisualSOPassObject& operator=(IN const VisualSOPassObject&) = delete;
-
-	bool EnableMultithreading = false;
-
 	IVisualWorkObject::enum_t
 	GetWorkObjectState() const override {
 		TRACE_FUNCTION_PROTO; return ProcessingState;
 	}
 
+
+	void DoImageProcessingRoutine() {
+		TRACE_FUNCTION_PROTO;
+
+
+	}
+
+
+	// Oneshot initialization variables, set these before scheduling the object
+	bool EnableMultithreading = false;
+	CodeDiscoveryMode Mode = DISCOVER_USE_HIGHEST_AVAILABLE;
+
 private:
 	mutable
 	std::atomic<CurrentSOMPassState> ProcessingState;
+	
 	IDisassemblerTracker* DisassmeblerTracker;
 
-
+	// Function table data and lookup
+	std::vector<FunctionTableEntry>      FunctionTableData;
+	std::unordered_map<byte_t*, int32_t> FunctionTableIndices;
 };
+#pragma endregion
 
-
-
+#pragma region VisualSingularity controller objects
 class VisualSingularityApp {
 public:
-	struct ThrowAbortTag : public VisualAppException {
-		ThrowAbortTag()
-			: VisualAppException("Aborted object on call by user dispatch",
-				VisualAppException::STATUS_ABORTED_OBJECT_IN_CALL) {
-			TRACE_FUNCTION_PROTO;
-		}
-	};
 	enum ControlRequest {
 		CWI_OPEN_FILE,
 		CWI_LOAD_FILE,
-		CWI_DO_UNLOAD_IMAGE,
 		CWI_DO_PROCESSING_FINAL,
 	};
 	struct QueueWorkItem {
@@ -426,8 +522,8 @@ public:
 		return static_cast<VisualOpenFileObject*>(WorkItemEntry.WorkingObject.get());
 	}
 	const VisualLoadImageObject* QueueLoadImageRequestWithTracker2(    // Schedules a load operation on the working threadpool
-																       // and returns the schedules request by pointer,
-																       // the returned object contains up to date information about the loading procedure
+																	   // and returns the schedules request by pointer,
+																	   // the returned object contains up to date information about the loading procedure
 		IN std::unique_ptr<VisualLoadImageObject> LoadImageInformation // The information used to try to schedule the image
 	) {
 		TRACE_FUNCTION_PROTO;
@@ -493,9 +589,7 @@ public:
 			static_cast<const void*>(WorkItemEntry));
 	}
 
-	static void DispatchAbortCheck() { // TODO: implement
-		TRACE_FUNCTION_PROTO;
-	}
+	
 
 private:
 	void QueueEnlistWorkItem(
@@ -527,141 +621,47 @@ private:
 		switch (WorkObject->ControlCommand) {
 		case CWI_OPEN_FILE: {
 
-			auto OpenObject = static_cast<VisualOpenFileObject*>(WorkObject->WorkingObject.get());
-			OpenObject->OpenDlgState = VisualOpenFileObject::STATE_OPENING;
-
+			// Notify of long running function and run obejct processor, this object type is self processing
 			auto Status = CallbackMayRunLong(CallbackInstance);
 			if (!Status)
 				SPDLOG_WARN("Long running function in quick threadpool, failed to created dedicated thread");
-			OpenObject->OpenFileResult = ComOpenFileDialogWithConfig(
-				*static_cast<OpenFileDialogConfig*>(OpenObject));
-			OpenObject->OpenFileResult.empty() ?
-				SPDLOG_WARN("The user selected to cancel the file selection prompt") :
-				SPDLOG_INFO("User selected "ESC_BRIGHTYELLOW"\"{}\""ESC_RESET", for image",
-					OpenObject->OpenFileResult);
-
-			// Set the State of the object, no lock required, state is atomic
-			OpenObject->OpenDlgState = OpenObject->OpenFileResult.empty() ? VisualOpenFileObject::STATE_CANCELED
-				: VisualOpenFileObject::STATE_DIALOG_DONE;
+			auto OpenObject = static_cast<VisualOpenFileObject*>(WorkObject->WorkingObject.get());
+			OpenObject->DoOpenFileProcessObject();
 			break;
 		}
 		case CWI_LOAD_FILE: {
 
 			// Initialize load and inform threadpool of possibly long running function
-			auto LoadObject = static_cast<VisualLoadImageObject*>(WorkObject->WorkingObject.get());
-			LoadObject->ImageLoadState = VisualLoadImageObject::STATE_LOADING_MEMORY;
 			auto Status = CallbackMayRunLong(CallbackInstance);
 			if (!Status)
 				SPDLOG_WARN("Long running function in quick threadpool, failed to created dedicated thread");
-
-			// Try to load the image, the path is assumed to be checked before passing,
-			// ImageLoader will "check" it regardless, as in not being able to open it.
-			auto& TargetImage = WorkObject->OwnerController->TargetImage;
-			auto& SymbolServer = WorkObject->OwnerController->SymbolServer;
-			try {
-				TargetImage = std::make_unique<ImageHelp>(LoadObject->ImageFile.string());
-				TargetImage->MapImageIntoMemory(LoadObject->InfoTracker);
-
-				// Check if we can try to load symbols
-				if (!LoadObject->DisableSymbolServer) {
-
-					// Decide how to load the pdb dependent on how the path is set
-					LoadObject->ImageLoadState = VisualLoadImageObject::STATE_LAODING_SYMBOLS;
-					TargetImage->RejectFileCloseHandles();
-					if (!LoadObject->PdbFile.empty()) {
-
-						SymbolServer = std::make_unique<SymbolHelp>(
-							LoadObject->PdbFile.string());
-						SymbolServer->InstallPdbFileMappingVirtualAddress(
-							TargetImage->GetImageFileMapping());
-					}
-					else
-						SymbolServer = std::make_unique<SymbolHelp>(
-							*static_cast<IImageLoaderHelp*>(TargetImage.get()));
-				}
-
-				// Relocate Image in memory confirm changes and notify of finished state
-				LoadObject->NumberOfPolyX = TargetImage->ApproximateNumberOfRelocationsInImage();
-				LoadObject->ImageLoadState = VisualLoadImageObject::STATE_RELOCATING;
-				TargetImage->RelocateImageToMappedOrOverrideBase(LoadObject->InfoTracker);
-				LoadObject->ImageLoadState = VisualLoadImageObject::STATE_FULLY_LOADED;
-			}
-			catch (const CommonExceptionType& ExceptionInforamtion) {
-
-				// Do internal cleanup and complete this request
-				SymbolServer.release();
-				TargetImage.release();
-				switch (ExceptionInforamtion.ExceptionTag) {
-				case CommonExceptionType::EXCEPTION_IMAGE_HELP:
-					SPDLOG_ERROR("The image load failed due to [{}]: \"{}\"",
-						ExceptionInforamtion.StatusCode,
-						ExceptionInforamtion.ExceptionText);
-					LoadObject->ImageLoadState = VisualLoadImageObject::STATE_ERROR;
-					break;
-					
-				case CommonExceptionType::EXCEPTION_COMOLE_EXP:
-					SPDLOG_ERROR("MS DIA failed to load the pdb for "ESC_BRIGHTBLUE"\"{}\"",
-						LoadObject->ImageFile.string());
-					LoadObject->ImageLoadState = VisualLoadImageObject::STATE_ERROR;
-					break;
-
-				case CommonExceptionType::EXCEPTION_VISUAL_APP:
-					SPDLOG_WARN("The ongoing Load "ESC_BRIGHTRED"{}"ESC_RESET" was aborted by callback",
-						static_cast<void*>(WorkObject));
-					LoadObject->ImageLoadState = VisualLoadImageObject::STATE_ABORTED;
-					break;
-
-				default:
-					__fastfail(static_cast<uint32_t>(-247628)); // TODO: Temporary will be fixed soon
-				}
-			}
+			auto LoadObject = static_cast<VisualLoadImageObject*>(WorkObject->WorkingObject.get());
+			LoadObject->ImageLoadState = VisualLoadImageObject::STATE_LOADING_MEMORY;
+			LoadObject->DoLoadFileAsyncProcessing();
 			break;
 		}
 
-		case CWI_DO_PROCESSING_FINAL:
+		case CWI_DO_PROCESSING_FINAL: {
+			
+			// This is just temporary as i just need something running
+			auto Status = CallbackMayRunLong(CallbackInstance);
+			if (!Status)
+				SPDLOG_WARN("Long running function in quick threadpool, failed to created dedicated thread");
+			auto ProcessingObject = static_cast<VisualSOPassObject*>(WorkObject->WorkingObject.get());
+
+			
+			
 			break;
-		}
+		}}
 	}
 
 	std::deque<QueueWorkItem>   WorkResponseList;
 	std::mutex                  ThreadPoolLock;
 	TP_CALLBACK_ENVIRON         ThreadPoolEnvironment{};
 
-	std::unique_ptr<ImageHelp>  TargetImage;
-	std::unique_ptr<SymbolHelp> SymbolServer;
-
-
-	std::vector<int>            FunctionTableData;
-
 };
 #pragma endregion
 
-#pragma region Console mode interface
-class ConsoleModifier {
-public:
-	ConsoleModifier(
-		IN HANDLE ConsoleHandle = GetStdHandle(STD_OUTPUT_HANDLE)
-	)
-		: ConsoleHandle(ConsoleHandle) {
-		TRACE_FUNCTION_PROTO;
-
-		// Save previous console mode and switch to nicer mode
-		GetConsoleMode(ConsoleHandle, &PreviousConsoleMode);
-
-		auto NewConsoleMode = PreviousConsoleMode | ENABLE_VIRTUAL_TERMINAL_PROCESSING;
-		SetConsoleMode(ConsoleHandle, NewConsoleMode);
-	}
-
-	~ConsoleModifier() {
-		TRACE_FUNCTION_PROTO;
-
-		SetConsoleMode(ConsoleHandle, PreviousConsoleMode);
-	}
-
-	HANDLE ConsoleHandle;
-	DWORD  PreviousConsoleMode;
-};
-#pragma endregion
 
 class VisualTrackerApp 
 	: public IImageLoaderTracker,
@@ -829,19 +829,44 @@ public:
 private:
 	const VisualSingularityApp& ApplicationController;
 };
+#pragma endregion
 
+#pragma region Console mode interface
+class ConsoleModifier {
+public:
+	ConsoleModifier(
+		IN HANDLE ConsoleHandle = GetStdHandle(STD_OUTPUT_HANDLE)
+	)
+		: ConsoleHandle(ConsoleHandle) {
+		TRACE_FUNCTION_PROTO;
+
+		// Save previous console mode and switch to nicer mode
+		GetConsoleMode(ConsoleHandle, &PreviousConsoleMode);
+
+		auto NewConsoleMode = PreviousConsoleMode | ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+		SetConsoleMode(ConsoleHandle, NewConsoleMode);
+	}
+
+	~ConsoleModifier() {
+		TRACE_FUNCTION_PROTO;
+
+		SetConsoleMode(ConsoleHandle, PreviousConsoleMode);
+	}
+
+	HANDLE ConsoleHandle;
+	DWORD  PreviousConsoleMode;
+};
+#pragma endregion
 
 void GlfwErrorHandlerCallback(
 	IN       int32_t ErrorCode,
 	IN const char*   Description
 ) {
 	TRACE_FUNCTION_PROTO;
-
-	SPDLOG_ERROR("glfw failed with {}: \"{}\"",
+	SPDLOG_ERROR("glfw failed with " ESC_BRIGHTRED"{}" ESC_RESET": " ESC_BRIGHTYELLOW"\"{}\"",
 		ErrorCode,
 		Description);
 }
-
 
 void HelpMarker(
 	IN const char* Description
@@ -1138,10 +1163,10 @@ private:
 	// Using faster more efficient replacements of stl types for rendering
 	ImGuiTextBuffer            LoggedContent;
 	std::vector<SinkLineContent> LogMetaData; // Cannot use ImVetctor here as the type is not trivially copyable 
-	                                          // the type has to be moved into, slightly more expensive
-	                                          // but overall totally fine, at least no weird hacks
+											  // the type has to be moved into, slightly more expensive
+											  // but overall totally fine, at least no weird hacks
 	ImVector<int32_t> FilteredView;           // A filtered array of indexes into the LogMetaData vector
-	                                          // this view is calculated once any filter changes
+											  // this view is calculated once any filter changes
 	bool EnableAutoScrolling = true;
 
 	// Previous Frame's filterdata, if any of these change to the new values the filter has to be recalculated
@@ -1441,19 +1466,33 @@ export int32_t WinMain(
 					ImGui::BeginDisabled(ProgramPhase == STATE_IMAGE_LOADING_MEMORY);
 					ImGui::Checkbox("Load with Symbols", &LoadWithPdb);
 					ImGui::SameLine();
-					if (ImGui::Button("Load Image###LoadImageTrigger")) {
+					if (ImGui::Button(ProgramPhase >= STATE_IMAGE_LOADED_WAITING ?
+						"Unload Image###LoadImageTrigger" : "Load Image###LoadImageTrigger")) {
 
-						// Load image here, this schedules a load and stores the load object.
-						// This object is temporary and valid only for the load,
-						// it has to be trashed and returned to a cleanup function to free it,
-						// after that contained information is no longer valid and must be preserved.
-						LoaderObjectState = SingularityApiController.QueueLoadImageRequestWithTracker2(
-							std::make_unique<VisualLoadImageObject>(
-								InputFilePath,
-								!LoadWithPdb,
-								PathToPdb,
-								&DataTrackLog));
-						ProgramPhase = STATE_IMAGE_LOADING_MEMORY;
+
+						if (ProgramPhase >= STATE_IMAGE_LOADED_WAITING) {
+
+							// Need to unload the image
+							SingularityApiController.FreeWorkItemFromPool(LoaderObjectState);
+							SPDLOG_INFO("Unloaded image object " ESC_BRIGHTRED"{}",
+								static_cast<const void*>(LoaderObjectState));
+							LoaderObjectState = nullptr;
+							ProgramPhase = PHASE_NEUTRAL_STARTUP;
+						}
+						else {
+
+							// Load image here, this schedules a load and stores the load object.
+							// This object is temporary and valid only for the load,
+							// it has to be trashed and returned to a cleanup function to free it,
+							// after that contained information is no longer valid and must be preserved.
+							LoaderObjectState = SingularityApiController.QueueLoadImageRequestWithTracker2(
+								std::make_unique<VisualLoadImageObject>(
+									InputFilePath,
+									!LoadWithPdb,
+									PathToPdb,
+									&DataTrackLog));
+							ProgramPhase = STATE_IMAGE_LOADING_MEMORY;
+						}
 					}
 					ImGui::EndDisabled();
 					if (EnableLastErrorMessage)
@@ -1562,8 +1601,6 @@ export int32_t WinMain(
 									LoaderObjectState->GetPolyXNumber()));
 							SubFrameProgress = 1;
 							ProgramPhase = STATE_IMAGE_LOADED_WAITING;
-							SingularityApiController.FreeWorkItemFromPool(LoaderObjectState);
-							LoaderObjectState = nullptr;
 							break;
 
 						default:
@@ -1571,11 +1608,7 @@ export int32_t WinMain(
 							__fastfail(STATUS_FAILED_GUI_LOGIC);
 						}
 						break;
-
-					case STATE_IMAGE_LOADED_WAITING:
-						
-					default:
-						break;
+					default:;
 					}
 
 
@@ -1632,17 +1665,20 @@ export int32_t WinMain(
 
 					ImGui::Checkbox("Enable multithreading", &AnalysisMultithreaded);
 					ImGui::SameLine();
-					HelpMarker("Configures the controler to schedule individual functions on the thread pool,"
+					HelpMarker("Configures the controller to schedule individual functions on the thread pool,"
 						"instead of looping through them.\n"
 						"This settings disables the virtual time spooling, due to cpu thrashing");
 					
-
 					if (ImGui::Button("Run Analysis")) {
 
 						// Initialalize substation
 
+						auto SOBPassUnqueuedObject = std::make_unique<VisualSOPassObject>(&DataTrackLog);
+						SOBPassUnqueuedObject->EnableMultithreading = AnalysisMultithreaded;
 						MainSOBPassObject = SingularityApiController.QueueMainPassProcessObject(
-							std::make_unique<VisualSOPassObject>(&DataTrackLog));
+							std::move(SOBPassUnqueuedObject));
+						SPDLOG_INFO("Queued SOB processor pass " ESC_BRIGHTRED"{}",
+							static_cast<const void*>(MainSOBPassObject));
 					}
 
 					// ImGui::EndTable();
