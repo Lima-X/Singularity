@@ -4,9 +4,12 @@ module;
 
 #include "VirtualizerBase.h"
 #include <dia2.h>
+#include <filesystem>
 
 export module SymbolHelp;
 import ImageHelp;
+
+namespace filesystem = std::filesystem;
 
 #define MAKE_SYMHELP_HRESULT(Severity, StatusCode)\
 	(((Severity) << 31) | (1 << 29) | ((StatusCode & 0xffff)))
@@ -39,18 +42,9 @@ public:
 export class SymbolHelp {
 public:
 	SymbolHelp(
-		IN const IImageLoaderHelp& ImageHelpInterface,
-		IN const std::string_view& PdbSearchPath = {}
-	)
-		: SymbolHelp(ImageHelpInterface.GetImageFileName(),
-			PdbSearchPath) {
-		TRACE_FUNCTION_PROTO;
-
-		InstallPdbFileMappingVirtualAddress(ImageHelpInterface.GetImageFileMapping());
-	}
-	SymbolHelp(
-		IN const std::string_view& PdbExeFileName,
-		IN const std::string_view& PdbSearchPath = {}
+		IN const filesystem::path& PdbExeFileName,
+		IN       bool              LoadAsPdbOverwrite = false,
+		IN const filesystem::path& PdbSearchPath = {}
 	) {
 		TRACE_FUNCTION_PROTO;
 
@@ -59,21 +53,23 @@ public:
 			nullptr,
 			CLSCTX_INPROC_SERVER);
 		if (FAILED(ComResult))
-			throw std::runtime_error("failed to create DIA-SOURCE instance, register msdiaX.dll");
+			throw SymbolException(
+				fmt::format("Failed to create DIASOURCE instance with " ESC_BRIGHTRED"{}" ESC_RESET
+					" : \"" ESC_BRIGHTRED"{}\"",
+					ComResult,
+					FormatWin32ErrorMessage(ComResult)),
+				ComResult);
 
-		// Load program debug database directly through path
-		auto PdbExeFileName2 = ConvertAnsiToUnicode(PdbExeFileName);
-		ComResult = DiaSource->loadDataFromPdb(PdbExeFileName2.c_str());
-		// ComResult = -1;
-		if (FAILED(ComResult)) {
+		// Check filenames manually, due to a bug in msdia causing a file handle leak
+		if (!PdbExeFileName.extension().compare(".pdb"))
+			LoadAsPdbOverwrite = true;
+		if (!LoadAsPdbOverwrite) {
 
-			DiaSource.Release();
 			// Failed to open file, possibly not a PDB, try to open it as an executable image?
 			// The path was not a pdb ?, try to load it as an executable			
-			
-			auto PdbSearchPath2 = ConvertAnsiToUnicode(PdbSearchPath);
-			ComResult = DiaSource->loadDataForExe(PdbExeFileName2.c_str(),
-				PdbSearchPath2.empty() ? nullptr : PdbSearchPath2.c_str(),
+			ComResult = DiaSource->loadDataForExe(PdbExeFileName.c_str(),
+				PdbSearchPath.empty() ? nullptr
+					: PdbSearchPath.c_str(),
 				nullptr);
 			switch (ComResult) {
 			case S_OK:
@@ -86,8 +82,30 @@ public:
 			default:
 				throw std::runtime_error("failed to load pdb for executable (automatic mode) unspecified error");
 			}
+
 		}
-		
+		else {
+
+			// File is a pdb by extension or override, load as is
+			ComResult = DiaSource->loadDataFromPdb(PdbExeFileName.c_str());
+			switch (ComResult) {
+			case S_OK:
+				break;
+			case E_PDB_NOT_FOUND:
+			case E_PDB_FORMAT:
+				SPDLOG_WARN("loadDataFromPdb failed to load " ESC_BRIGHTYELLOW"\"{}\"" ESC_RESET" as pdb,\n"
+					"due to a bug in msdia, this may have leaked a file handle to said file,\n"
+					"resulting in the file being effectively locked up till the end of thise software.\n"
+					"Restarting the application may be advised if it refuses to reload the any FILE.",
+					PdbExeFileName.string().c_str());
+				throw SymbolException("symbol FAILED to load, check previous for more data",
+					ComResult);
+
+			default:
+				throw std::runtime_error("failed to load pdb (manual mode), unspecified");
+			}
+		}
+
 		ComResult = DiaSource->openSession(&DiaSession);
 		ComResult = DiaSession->get_globalScope(&DiaSymbols);
 		if (FAILED(ComResult))
@@ -108,15 +126,16 @@ public:
 		//       The Constructors of this class, as well as the Reject mechanism in ImageHelp.ixx as thats obsolete now,
 		//       being a pure workaround for what i deemed was a stupid design choice
 
+		// EDIT: bug should be circumvented now
 	}
 
 	void InstallPdbFileMappingVirtualAddress(
-		IN const byte_t* VirtualImageBase
+		IN const IImageLoaderHelp* VirtualImage
 	) {
 		TRACE_FUNCTION_PROTO;
 
 		auto ComResult = DiaSession->put_loadAddress(
-			reinterpret_cast<uintptr_t>(VirtualImageBase));
+			reinterpret_cast<uintptr_t>(VirtualImage->GetImageFileMapping()));
 		if (ComResult != S_OK)
 			throw std::runtime_error("did not set imagebase for symbol translation");
 	}

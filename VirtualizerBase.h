@@ -339,3 +339,11 @@ inline token_t GenerateGlobalUniqueTokenId() { // Generates a global token in a 
 	static token_t InitialToken = 0;
 	return ++InitialToken;
 }
+
+inline std::string FormatWin32ErrorMessage(
+	IN HRESULT Win32ErrorCode
+) {
+	TRACE_FUNCTION_PROTO;
+
+	return "FORMAT NOT IMPLEMENTED";
+}

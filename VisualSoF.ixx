@@ -290,6 +290,7 @@ private:
 class VisualLoadImageObject 
 	: public IVisualWorkObject {
 	friend class VisualSingularityApp;
+	friend class VisualSOPassObject;
 public:
 	enum CurrentLoadState {
 		STATE_ABORTING = IVisualWorkObject::STATE_ABORTING_CALL,
@@ -341,29 +342,29 @@ private:
 		// Try to load the image, the path is assumed to be checked before passing,
 		// ImageLoader will "check" it regardless, as in not being able to open it.
 		try {
-			TargetImage = std::make_unique<ImageHelp>(ImageFile.string());
-			TargetImage->MapImageIntoMemory(InfoTracker);
-
 			// Check if we can try to load symbols
 			if (!DisableSymbolServer) {
 
 				// Decide how to load the pdb dependent on how the path is set
 				ImageLoadState = VisualLoadImageObject::STATE_LAODING_SYMBOLS;
-				TargetImage->RejectFileCloseHandles();
-				if (!PdbFile.empty()) {
-
-					SymbolServer = std::make_unique<SymbolHelp>(
-						PdbFile.string());
-					SymbolServer->InstallPdbFileMappingVirtualAddress(
-						TargetImage->GetImageFileMapping());
-				}
-				else
-					SymbolServer = std::make_unique<SymbolHelp>(
-						*static_cast<IImageLoaderHelp*>(TargetImage.get()));
+				SymbolServer = std::make_unique<SymbolHelp>(
+					PdbFile.empty() ? ImageFile : PdbFile,
+					!PdbFile.empty());
 			}
 
-			// Relocate Image in memory confirm changes and notify of finished state
+			// Load the image, this has to be done after loading the symbols
+			ImageLoadState = VisualLoadImageObject::STATE_LOADING_MEMORY;
+			TargetImage = std::make_unique<ImageHelp>(ImageFile.string());
+			TargetImage->MapImageIntoMemory(InfoTracker);
+
+			// Register image address for symbol server
+			if (!DisableSymbolServer)
+				SymbolServer->InstallPdbFileMappingVirtualAddress(
+					TargetImage.get());
+			TargetImage->RejectFileCloseHandles();
 			NumberOfPolyX = TargetImage->ApproximateNumberOfRelocationsInImage();
+
+			// Relocate Image in memory confirm changes and notify of finished state
 			ImageLoadState = VisualLoadImageObject::STATE_RELOCATING;
 			TargetImage->RelocateImageToMappedOrOverrideBase(InfoTracker);
 			ImageLoadState = VisualLoadImageObject::STATE_FULLY_LOADED;
@@ -371,6 +372,7 @@ private:
 		catch (const CommonExceptionType& ExceptionInforamtion) {
 
 			// Do internal cleanup and complete this request
+			ExitExceptionCopy = std::make_unique<CommonExceptionType>(ExceptionInforamtion);
 			SymbolServer.release();
 			TargetImage.release();
 			switch (ExceptionInforamtion.ExceptionTag) {
@@ -462,13 +464,72 @@ public:
 	void DoImageProcessingRoutine() {
 		TRACE_FUNCTION_PROTO;
 
+		// Generate Cfgs....
+		ProcessingState = STATE_PROCESSING;
+
+		xed_state_t XedConfig;
+		xed_state_init2(&XedConfig,
+			XED_MACHINE_MODE_LONG_64,
+			XED_ADDRESS_WIDTH_64b);
+		CfgGenerator XCfgGenerator(*LoaderObject->TargetImage,
+			XedConfig);
+
+		// Enumerate all function entries here
+		auto RuntimeFunctionsView = LoaderObject->TargetImage->GetRuntimeFunctionTable();
+		NumberOfFunctions = RuntimeFunctionsView.size();
+		for (const RUNTIME_FUNCTION& RuntimeFunction : RuntimeFunctionsView) {
+
+			// Generate Cfg from function
+
+			// Tests
+			// auto FunctionAddres = SymbolServer.FindFunctionFrameByName("StubTestFunction2");
+			// auto GraphForFunction = ControlFlowGraphGenerator.GenerateCfgFromFunction2(
+			// 	FunctionAddres);
+			// auto InvalidXRefs = GraphForFunction.ValidateCfgOverCrossReferences();
+			// __debugbreak();
+
+			try {
+
+				auto GraphForRuntimeFunction = XCfgGenerator.GenerateCfgFromFunction2(
+					FunctionAddress(
+						RuntimeFunction.BeginAddress + LoaderObject->TargetImage->GetImageFileMapping(),
+						RuntimeFunction.EndAddress - RuntimeFunction.BeginAddress),
+					*DisassmeblerTracker);
+				auto Failures = GraphForRuntimeFunction.ValidateCfgOverCrossReferences();
+				if (Failures) {
+
+					__debugbreak();
+
+				}
+
+				++FramesProcessed;
+			}
+			catch (const CfgToolException& GraphException) {
+
+				SPDLOG_ERROR("Graph generation failed failed with [{}] : \"{}\", skipping frame",
+					GraphException.StatusCode,
+					GraphException.ExceptionText);
+				++FramesProcessed;
+
+				//if (IsDebuggerPresent())
+				// 	__debugbreak();
+			}
+
+
+		}
+
+		ProcessingState = STATE_ALL_PASSES_APLIED_DONE;
 
 	}
+
+	std::atomic_uint32_t NumberOfFunctions = 0;
+	std::atomic_uint32_t FramesProcessed = 0;
 
 
 	// Oneshot initialization variables, set these before scheduling the object
 	bool EnableMultithreading = false;
 	CodeDiscoveryMode Mode = DISCOVER_USE_HIGHEST_AVAILABLE;
+	const VisualLoadImageObject* LoaderObject = nullptr;
 
 private:
 	mutable
@@ -648,7 +709,7 @@ private:
 			if (!Status)
 				SPDLOG_WARN("Long running function in quick threadpool, failed to created dedicated thread");
 			auto ProcessingObject = static_cast<VisualSOPassObject*>(WorkObject->WorkingObject.get());
-
+			ProcessingObject->DoImageProcessingRoutine();
 			
 			
 			break;
@@ -805,7 +866,19 @@ public:
 		DoWaitTimeInterval();
 	}
 
+	void ResetData() {
+		TRACE_FUNCTION_PROTO;
 
+		CurrentAddressOfInterest = 0;
+		VirtualSizeOfInterets = 0;
+		RelocsApplied = 0;
+		NumberOfSectionsInImage = 0;
+		NumberOfSectionsLoaded = 0;
+		NumberOfFramesProcessed = 0;
+		TotalNumberOfFrames = 0;
+		NumberOfAllocatedCfgNodes = 0;
+		NumebrOfInstructionsDecoded = 0;
+	}
 
 	std::atomic<byte_t*> CurrentAddressOfInterest = nullptr;
 	std::atomic_size_t   VirtualSizeOfInterets = 0;
@@ -926,12 +999,20 @@ public:
 			ImGui::SameLine();
 			if (ImGui::Button("Copy"))
 				glfwSetClipboardString(ClipBoardOwner, LoggedContent.c_str());
-			ImGui::SameLine();
-
+			
 			// Filter by log level with cache
 
+
+
+			// print log data
+			ImGui::Text("%d messages logged, using %dmb memory",
+				NumberOfLogEntries,
+				(LoggedContent.size() + IndicesInBytes) / (1024 * 1024));
+
+
 			ImGui::Separator();
-			ImGui::BeginChild("scrolling", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
+			ImGui::BeginChild("scrolling", ImVec2(0, 0), false,
+				ImGuiWindowFlags_AlwaysVerticalScrollbar | ImGuiWindowFlags_AlwaysHorizontalScrollbar);
 
 			ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
 			const char* buf = LoggedContent.begin();
@@ -1044,6 +1125,8 @@ public:
 
 		LoggedContent.clear();
 		LogMetaData.clear();
+		NumberOfLogEntries = 0;
+		IndicesInBytes = 0;
 		
 		if (!DisableLock)
 			sink_t::mutex_.unlock();
@@ -1057,6 +1140,7 @@ protected:
 	) noexcept {
 		// This is all protected by the base sink under a mutex
 		TRACE_FUNCTION_PROTO;
+		++NumberOfLogEntries;
 
 		// Format the logged message and push it into the text buffer
 		spdlog::memory_buf_t FormattedBuffer;
@@ -1111,6 +1195,9 @@ protected:
 				if (MessageData2.FormattedStringRanges.size())
 					MessageData2.FormattedStringRanges.back().SubStringEnd = i + OldTextBufferSize;
 				LogMetaData.push_back(MessageData2);
+				IndicesInBytes += MessageData2.FormattedStringRanges.size() *
+					sizeof(SinkLineContent::ColorDataRanges) +
+					sizeof(SinkLineContent);
 				MessageData2.LogLevel = spdlog::level::n_levels;
 				MessageData2.FormattedStringRanges.clear();
 
@@ -1167,6 +1254,9 @@ private:
 											  // but overall totally fine, at least no weird hacks
 	ImVector<int32_t> FilteredView;           // A filtered array of indexes into the LogMetaData vector
 											  // this view is calculated once any filter changes
+	uint32_t NumberOfLogEntries = 0;          // Counts the number of entries logged
+	uint32_t IndicesInBytes = 0;              // Keeps track of the amount of memory allocated by indices
+
 	bool EnableAutoScrolling = true;
 
 	// Previous Frame's filterdata, if any of these change to the new values the filter has to be recalculated
@@ -1477,6 +1567,7 @@ export int32_t WinMain(
 							SPDLOG_INFO("Unloaded image object " ESC_BRIGHTRED"{}",
 								static_cast<const void*>(LoaderObjectState));
 							LoaderObjectState = nullptr;
+							DataTrackLog.ResetData();
 							ProgramPhase = PHASE_NEUTRAL_STARTUP;
 						}
 						else {
@@ -1534,7 +1625,7 @@ export int32_t WinMain(
 				{
 					static const char* SelectionStateText;
 
-					static const char* GlobalProgressOverlay = "No global tracking data, DO NOT SHOW";
+					static std::string GlobalProgressOverlay{};
 					static float GlobalProgress = 0.0f;
 					static std::string SubFrameProgressOverlay{};
 					static float SubFrameProgress = 0.0f;
@@ -1542,6 +1633,7 @@ export int32_t WinMain(
 					switch (ProgramPhase) {
 					case PHASE_NEUTRAL_STARTUP:
 						SelectionStateText = "Waiting for file selection...";
+						GlobalProgressOverlay = {};
 						GlobalProgress = 0;
 						SubFrameProgressOverlay = {};
 						SubFrameProgress = 0;
@@ -1559,9 +1651,17 @@ export int32_t WinMain(
 							GlobalProgressOverlay = LoadWithPdb ? "0 / 3" : "0 / 2";
 							break;
 
+						case VisualLoadImageObject::STATE_LAODING_SYMBOLS:
+							SelectionStateText = "Loading symbols for image";
+							GlobalProgressOverlay = LoadWithPdb ? "0 / 3" : "0 /2";
+							SubFrameProgressOverlay = "Cannot track sub processing, waiting...";
+							SubFrameProgress = 0;
+							break;
+
 						case VisualLoadImageObject::STATE_LOADING_MEMORY:
 							SelectionStateText = "Loading image into primary system memory";
-							GlobalProgressOverlay = LoadWithPdb ? "0 / 3" : "0 / 2";
+							GlobalProgressOverlay = LoadWithPdb ? "1 / 3" : "1 / 2";
+							GlobalProgress = 1.f / (LoadWithPdb ? 3 : 2);
 							SubFrameProgressOverlay = fmt::format("Loaded {} / {}",
 								DataTrackLog.NumberOfSectionsLoaded,
 								DataTrackLog.NumberOfSectionsInImage);
@@ -1570,35 +1670,26 @@ export int32_t WinMain(
 								DataTrackLog.NumberOfSectionsInImage;
 							break;
 
-						case VisualLoadImageObject::STATE_LAODING_SYMBOLS:
-							SelectionStateText = "Loading symbols for image";
-							GlobalProgressOverlay = LoadWithPdb ? "1 / 3" : "1 /2";
-							GlobalProgress = 1.f / (LoadWithPdb ? 3 : 2);
-							SubFrameProgressOverlay = "Cannot track sub processing, waiting...";
-							SubFrameProgress = 0;
-							break;
-
 						case VisualLoadImageObject::STATE_RELOCATING:
 							SelectionStateText = "Relocating image in memory view";
 							GlobalProgressOverlay = LoadWithPdb ? "2 / 3" : "1 /2";
 							GlobalProgress = (2.f - !LoadWithPdb) / (LoadWithPdb ? 3 : 2);
-							SubFrameProgressOverlay = fmt::format("Applied {} / {}",
+							SubFrameProgressOverlay = DataTrackLog.RelocsApplied > LoaderObjectState->GetPolyXNumber() ?
+								fmt::format("{} / {}+",
 								DataTrackLog.RelocsApplied,
-								std::max<uint32_t>(DataTrackLog.RelocsApplied,
-									LoaderObjectState->GetPolyXNumber()));
-							SubFrameProgress = static_cast<float>(DataTrackLog.RelocsApplied) /
-								std::max<uint32_t>(DataTrackLog.RelocsApplied,
-									LoaderObjectState->GetPolyXNumber());
+								LoaderObjectState->GetPolyXNumber())
+								: fmt::format("{} / {}",
+								DataTrackLog.RelocsApplied,
+								LoaderObjectState->GetPolyXNumber());
+							SubFrameProgress = static_cast<float>(DataTrackLog.RelocsApplied) / LoaderObjectState->GetPolyXNumber();
 							break;
 
 						case VisualLoadImageObject::STATE_FULLY_LOADED:
 							SelectionStateText = "Fully loaded image into view";
 							GlobalProgressOverlay = LoadWithPdb ? "3 / 3" : "2 / 2";
 							GlobalProgress = 1;
-							SubFrameProgressOverlay = fmt::format("Done {} / {}",
-								DataTrackLog.RelocsApplied,
-								std::max<uint32_t>(DataTrackLog.RelocsApplied,
-									LoaderObjectState->GetPolyXNumber()));
+							SubFrameProgressOverlay = fmt::format("{0} / {0}",
+								DataTrackLog.RelocsApplied);
 							SubFrameProgress = 1;
 							ProgramPhase = STATE_IMAGE_LOADED_WAITING;
 							break;
@@ -1608,13 +1699,37 @@ export int32_t WinMain(
 							__fastfail(STATUS_FAILED_GUI_LOGIC);
 						}
 						break;
-					default:;
+
+					case STATE_IMAGE_PROCESSING_AUTO:
+						switch (MainSOBPassObject->GetWorkObjectState()) {
+
+						case VisualSOPassObject::STATE_PROCESSING:
+							SelectionStateText = "Processing image data";
+
+							GlobalProgressOverlay = fmt::format("{} / {}",
+								MainSOBPassObject->FramesProcessed,
+								MainSOBPassObject->NumberOfFunctions);
+							GlobalProgress = static_cast<float>(MainSOBPassObject->FramesProcessed) /
+								MainSOBPassObject->NumberOfFunctions;
+							SubFrameProgressOverlay = "Processing sub frames, to be implemented";
+							SubFrameProgress = 0;
+							break;
+
+
+						case VisualSOPassObject::STATE_ALL_PASSES_APLIED_DONE:
+							ProgramPhase = STATE_IMAGE_WAS_PROCESSED;
+						default:
+							break;
+						}
+
+					default:
+						break;
 					}
 
 
 					ImGui::ProgressBar(GlobalProgress,
 						ImVec2(-FLT_MIN, 0),
-						GlobalProgressOverlay);
+						GlobalProgressOverlay.c_str());
 					ImGui::SameLine();
 					ImGui::Text("GlobalProgress");
 
@@ -1675,10 +1790,13 @@ export int32_t WinMain(
 
 						auto SOBPassUnqueuedObject = std::make_unique<VisualSOPassObject>(&DataTrackLog);
 						SOBPassUnqueuedObject->EnableMultithreading = AnalysisMultithreaded;
+						SOBPassUnqueuedObject->LoaderObject = LoaderObjectState;
+
 						MainSOBPassObject = SingularityApiController.QueueMainPassProcessObject(
 							std::move(SOBPassUnqueuedObject));
 						SPDLOG_INFO("Queued SOB processor pass " ESC_BRIGHTRED"{}",
 							static_cast<const void*>(MainSOBPassObject));
+						ProgramPhase = STATE_IMAGE_PROCESSING_AUTO;
 					}
 
 					// ImGui::EndTable();

@@ -852,15 +852,17 @@ public:
 		const T& Underlying = this->GetUnderlyingCrtpBase();
 		auto& RelocationDirectory = Underlying.GetCoffMemberByTemplateId<T::GET_DATA_DIRECTORIES>(
 			)[IMAGE_DIRECTORY_ENTRY_BASERELOC];
-		uint32_t MaxNumberOfRelocations = RelocationDirectory.Size / 2;
+		if (!RelocationDirectory.Size)
+			return 0;
 
+		uint32_t MaxNumberOfRelocations = RelocationDirectory.Size / 2;
 		auto SectionHeaders = Underlying.GetCoffMemberByTemplateId<T::GET_SECTION_HEADERS>();
-		auto SizeOfPrimaryImage = SectionHeaders.back().VirtualAddress +
-			SectionHeaders.back().Misc.VirtualSize -
-			SectionHeaders.front().VirtualAddress;
+		size_t SizeOfPrimaryImage = 0;
+		for (const auto& Section : SectionHeaders)
+			SizeOfPrimaryImage += Section.Misc.VirtualSize;
+
 		uint32_t MinNumberOfRelocations = MaxNumberOfRelocations - 
 			SizeOfPrimaryImage / 4096;
-
 		return (MaxNumberOfRelocations + MinNumberOfRelocations) / 2;
 	}
 

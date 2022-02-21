@@ -588,8 +588,8 @@ public:
 	using FunctionAddress = FunctionAddress;
 
 	CfgGenerator(
-		IN const ImageHelp&  ImageMapping,
-		IN       xed_state_t IntelXedState
+		IN const ImageHelp&   ImageMapping,
+		IN const xed_state_t& IntelXedState
 	)
 		: ImageMapping(ImageMapping),
 		  IntelXedState(IntelXedState) {
