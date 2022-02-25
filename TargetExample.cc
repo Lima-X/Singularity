@@ -8,6 +8,28 @@
 #define INOUT
 #define OPT
 
+extern int SwitchSelect;
+void Call0();
+void Call1();
+void Call2();
+void Call3();
+void Call4();
+void Call5();
+void Call9();
+void MsvcX64JumptableTest() {
+	switch (SwitchSelect) {
+	case 0: Call0(); break;
+	case 1: Call1(); break;
+	case 2: Call2(); break;
+	case 3: Call3(); break;
+	case 4: Call4(); break;
+	case 5: Call5(); break;
+	default:
+		Call9();
+	}
+}
+
+#pragma optimize("", off)
 int TestFunction(
 	IN int Argument
 ) {
@@ -16,7 +38,6 @@ int TestFunction(
 	SingularityVirtualCodeEnd();
 	return Result;
 }
-
 int TestFunction2() {
 	SingularityVirtualCodeBegin();
 	int Result = 0;
@@ -25,7 +46,6 @@ int TestFunction2() {
 	SingularityVirtualCodeEnd();
 	return Result;
 }
-
 
 int EntryPoint(
 	IN unsigned long long RCX,
@@ -38,3 +58,4 @@ int EntryPoint(
 
 	return ReturnValue;
 }
+#pragma optimize("", on)

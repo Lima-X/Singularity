@@ -38,6 +38,13 @@ public:
 
 };
 
+bool ForceCloseFileHandleThrowEnumeration() {
+	TRACE_FUNCTION_PROTO;
+
+	return false; // no implemented
+}
+
+
 
 export class SymbolHelp {
 public:
@@ -95,8 +102,8 @@ public:
 			case E_PDB_FORMAT:
 				SPDLOG_WARN("loadDataFromPdb failed to load " ESC_BRIGHTYELLOW"\"{}\"" ESC_RESET" as pdb,\n"
 					"due to a bug in msdia, this may have leaked a file handle to said file,\n"
-					"resulting in the file being effectively locked up till the end of thise software.\n"
-					"Restarting the application may be advised if it refuses to reload the any FILE.",
+					"resulting in the file being effectively locked up till the end of this software.\n"
+					"Restarting the application may be advised if it refuses to reload any file.",
 					PdbExeFileName.string().c_str());
 				throw SymbolException("symbol FAILED to load, check previous for more data",
 					ComResult);
@@ -111,23 +118,23 @@ public:
 		if (FAILED(ComResult))
 			throw std::runtime_error("failed to load pdb data, open dia session, and load symbls");
 	}
-	~SymbolHelp() {
-		TRACE_FUNCTION_PROTO;
-
-		// BUG: unloading a file doesnt seem to release the file handle when symbols are loaded, 
-		//      idk why yet, theoratically this should be treated by the smart pointers
-
-		// BUG: EDIT: seems to be actually msdia, and still no idea why, its retarded that i have to close the file after reading it
-		//            just to access it with msdia anyways, so im just gonna fuck of the loadDataForExe api support
-		//            and locate the fucking pdb file myself, cba to fucking fix their tools
-		
-		// EDIT: the leak is caused by a failing call to loadDataFormPdb, this basically result in a ReadOnly handle leak, 
-		//       this bug wasnt noticed for a long time so good me has to rewrite a good few chunks here, such as:
-		//       The Constructors of this class, as well as the Reject mechanism in ImageHelp.ixx as thats obsolete now,
-		//       being a pure workaround for what i deemed was a stupid design choice
-
-		// EDIT: bug should be circumvented now
-	}
+	// ~SymbolHelp() {
+	// 	TRACE_FUNCTION_PROTO;
+	// 
+	// 	// BUG: unloading a file doesnt seem to release the file handle when symbols are loaded, 
+	// 	//      idk why yet, theoratically this should be treated by the smart pointers
+	// 
+	// 	// BUG: EDIT: seems to be actually msdia, and still no idea why, its retarded that i have to close the file after reading it
+	// 	//            just to access it with msdia anyways, so im just gonna fuck of the loadDataForExe api support
+	// 	//            and locate the fucking pdb file myself, cba to fucking fix their tools
+	// 	
+	// 	// EDIT: the leak is caused by a failing call to loadDataFormPdb, this basically result in a ReadOnly handle leak, 
+	// 	//       this bug wasnt noticed for a long time so good me has to rewrite a good few chunks here, such as:
+	// 	//       The Constructors of this class, as well as the Reject mechanism in ImageHelp.ixx as thats obsolete now,
+	// 	//       being a pure workaround for what i deemed was a stupid design choice
+	// 
+	// 	// EDIT: bug should be circumvented now
+	// }
 
 	void InstallPdbFileMappingVirtualAddress(
 		IN const IImageLoaderHelp* VirtualImage

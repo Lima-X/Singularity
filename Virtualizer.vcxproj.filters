@@ -30,6 +30,9 @@
     <ClCompile Include="VisualSoF.ixx">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="Amd64Lift.ixx">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="VirtualizerBase.h">

@@ -563,7 +563,7 @@ public:
 		UNREFERENCED_PARAMETER(NumberOfThreads);
 		TRACE_FUNCTION_PROTO;
 		InitializeThreadpoolEnvironment(&ThreadPoolEnvironment);
-		SPDLOG_INFO("Initilialized thread pool for async work");
+		SPDLOG_INFO("Initialized thread pool for async work");
 	}
 
 
@@ -957,19 +957,20 @@ void HelpMarker(
 	}
 }
 
-
+// TODO: work on filters, they are really needed, did optimize the memory storage quite a bit tho
 class ImGuiSpdLogAdaptor 
 	: public spdlog::sinks::base_sink<std::mutex> {
 	using sink_t = spdlog::sinks::base_sink<std::mutex>;
 
 	class SinkLineContent {
 	public:
-		spdlog::level::level_enum LogLevel; // if n_levels, the message pushed counts to the previous pushed line
+		spdlog::level::level_enum LogLevel;   // If n_levels, the message pushed counts to the previous pushed line
+		int32_t                   BeginIndex; // Base offset into the text buffer
 
 		struct ColorDataRanges {
-			AnsiEscapeSequenceTag FormatTag;
-			int32_t               SubStringBegin;
-			int32_t               SubStringEnd;
+			uint32_t SubStringBegin : 12;
+			uint32_t SubStringEnd   : 12;
+			uint32_t FormatTag      : 8;
 		};
 		ImVector<ColorDataRanges> FormattedStringRanges;
 	};
@@ -983,26 +984,39 @@ public:
 
 		if (ImGui::Begin("Singularity Log", &ShowWindow)) {
 			
-			// Options menu
-			if (ImGui::BeginPopup("Options"))
-			{
+			// Options submenu menu
+			if (ImGui::BeginPopup("Options")) {
+
 				ImGui::Checkbox("Auto-scroll", &EnableAutoScrolling);
 				ImGui::EndPopup();
 			}
-
-			// Main window
 			if (ImGui::Button("Options"))
 				ImGui::OpenPopup("Options");
+			ImGui::SameLine();
+			if (ImGui::Button("Copy"))
+				glfwSetClipboardString(ClipBoardOwner, LoggedContent.c_str());
 			ImGui::SameLine();
 			if (ImGui::Button("Clear"))
 				ClearLogBuffers();
 			ImGui::SameLine();
-			if (ImGui::Button("Copy"))
-				glfwSetClipboardString(ClipBoardOwner, LoggedContent.c_str());
-			
-			// Filter by log level with cache
 
+			static const char* LogLevels[] = SPDLOG_LEVEL_NAMES;
+			auto ActiveLogLevel = spdlog::get_level();
+			ImGui::Combo("##ActiveLogLevel",
+				reinterpret_cast<int32_t*>(&ActiveLogLevel),
+				LogLevels,
+				sizeof(LogLevels) / sizeof(LogLevels[0]));
+			spdlog::set_level(ActiveLogLevel);
+			FilterTextMatch.Draw("##LogFilter");
+			ImGui::SameLine();
+			auto NewFilterLevel = PreviousFilterLevel;
+			ImGui::Combo("##FilterLogLevel",
+				&NewFilterLevel,
+				LogLevels,
+				sizeof(LogLevels) / sizeof(LogLevels[0]));
 
+			// Filter by log level with cache, this rebuilds the cache automatically
+			RebuildFilterWithPreviousStates(NewFilterLevel);
 
 			// print log data
 			ImGui::Text("%d messages logged, using %dmb memory",
@@ -1089,9 +1103,11 @@ public:
 							}}
 
 							auto FormatRangeBegin = LoggedContent.begin() +
-								LogMetaData[ClipperLineNumber].FormattedStringRanges[i].SubStringBegin;
+								LogMetaData[ClipperLineNumber].FormattedStringRanges[i].SubStringBegin +
+								LogMetaData[ClipperLineNumber].BeginIndex;
 							auto FormatRangeEnd = LoggedContent.begin() +
-								LogMetaData[ClipperLineNumber].FormattedStringRanges[i].SubStringEnd;
+								LogMetaData[ClipperLineNumber].FormattedStringRanges[i].SubStringEnd +
+								LogMetaData[ClipperLineNumber].BeginIndex;
 							ImGui::TextUnformatted(FormatRangeBegin, FormatRangeEnd);
 							if (LogMetaData[ClipperLineNumber].FormattedStringRanges.size() - (i + 1))
 								ImGui::SameLine();
@@ -1166,7 +1182,8 @@ protected:
 		// Parse formatted logged string for ansi escape sequences
 		auto OldTextBufferSize = LoggedContent.size();
 		SinkLineContent MessageData2 {
-			LogMessage.level
+			LogMessage.level,
+			OldTextBufferSize
 		};
 		AnsiEscapeSequenceTag LastSequenceTagSinceBegin = FORMAT_RESET_COLORS;
 		
@@ -1176,12 +1193,10 @@ protected:
 		case '\x1b':
 		case '\n':
 			break;
-
 		default: {
 
 			SinkLineContent::ColorDataRanges FormatPush{
-				LastSequenceTagSinceBegin,
-				OldTextBufferSize,
+				0, 0, LastSequenceTagSinceBegin
 			};
 			MessageData2.FormattedStringRanges.push_back(FormatPush);
 		}}
@@ -1193,23 +1208,21 @@ protected:
 				// we can also assume this may not be the last line, so we continue the previous sequence into
 				// the next logically text line if necessary and reconfigure pushstate
 				if (MessageData2.FormattedStringRanges.size())
-					MessageData2.FormattedStringRanges.back().SubStringEnd = i + OldTextBufferSize;
+					MessageData2.FormattedStringRanges.back().SubStringEnd = i;
 				LogMetaData.push_back(MessageData2);
 				IndicesInBytes += MessageData2.FormattedStringRanges.size() *
 					sizeof(SinkLineContent::ColorDataRanges) +
 					sizeof(SinkLineContent);
 				MessageData2.LogLevel = spdlog::level::n_levels;
+				MessageData2.BeginIndex = OldTextBufferSize + i + 1;
 				MessageData2.FormattedStringRanges.clear();
 
 				// Continue previous escape sequences pushed in the previous line
 				SinkLineContent::ColorDataRanges FormatPush{
-					LastSequenceTagSinceBegin,
-					i + OldTextBufferSize + 1
+					i + 1, 0, LastSequenceTagSinceBegin
 				};
 				MessageData2.FormattedStringRanges.push_back(FormatPush);
-				break;
-			}
-
+			} break;
 			case '\x1b': {
 
 				// Handle ansi escape sequence, convert textual to operand
@@ -1227,8 +1240,7 @@ protected:
 				LastSequenceTagSinceBegin = EscapeSequenceCode;
 
 				SinkLineContent::ColorDataRanges FormatPush{
-					EscapeSequenceCode, 
-					i + OldTextBufferSize
+					i, 0, EscapeSequenceCode
 				};
 				if (MessageData2.FormattedStringRanges.size())
 					MessageData2.FormattedStringRanges.back().SubStringEnd = FormatPush.SubStringBegin;
@@ -1247,20 +1259,36 @@ protected:
 	void flush_() { TRACE_FUNCTION_PROTO; }
 
 private:
+	void RebuildFilterWithPreviousStates(
+		IN int32_t NewFilterLevel
+	) {
+		TRACE_FUNCTION_PROTO;
+
+		bool FullRebuild = NewFilterLevel != PreviousFilterLevel;
+		PreviousFilterLevel = NewFilterLevel;
+
+		bool PartialRebuild = PreviousIndices != LogMetaData.size();
+		PreviousIndices = LogMetaData.size();
+		
+	}
+
 	// Using faster more efficient replacements of stl types for rendering
 	ImGuiTextBuffer            LoggedContent;
 	std::vector<SinkLineContent> LogMetaData; // Cannot use ImVetctor here as the type is not trivially copyable 
 											  // the type has to be moved into, slightly more expensive
 											  // but overall totally fine, at least no weird hacks
+	ImGuiTextFilter   FilterTextMatch;
 	ImVector<int32_t> FilteredView;           // A filtered array of indexes into the LogMetaData vector
 											  // this view is calculated once any filter changes
 	uint32_t NumberOfLogEntries = 0;          // Counts the number of entries logged
 	uint32_t IndicesInBytes = 0;              // Keeps track of the amount of memory allocated by indices
-
-	bool EnableAutoScrolling = true;
+	bool     EnableAutoScrolling = true;
 
 	// Previous Frame's filterdata, if any of these change to the new values the filter has to be recalculated
-
+	int32_t PreviousFilterLevel = spdlog::level::trace;
+	decltype(ImGuiTextFilter::InputBuf)
+		PreviosuFilterText{};
+	int32_t PreviousIndices = 0;
 };
 
 
@@ -1295,6 +1323,19 @@ export int32_t WinMain(
 	GLFWwindow* PrimaryViewPort;
 	xed_state_t XedConfiguration;
 	try {
+		// Initialize and configure spdlog/fmt logger
+		VisualSinkObject = std::make_shared<ImGuiSpdLogAdaptor>();
+		spdlog::default_logger()->sinks().push_back(VisualSinkObject);
+		spdlog::set_pattern(SPDLOG_SINGULARITY_SMALL_PATTERN);
+#ifdef NDEBUG
+		spdlog::set_level(spdlog::level::info);
+#else
+		spdlog::set_level(spdlog::level::debug);
+#endif
+		// check if there is a console attached and disconnect all the console sink
+		spdlog::default_logger()->sinks().erase(spdlog::default_logger()->sinks().begin());
+		SPDLOG_INFO("Initilialized singularity obfuscation framework logger");
+
 		// Initialize COM / OLE Components
 		auto ComResult = CoInitializeEx(NULL,
 			COINIT_MULTITHREADED);
@@ -1304,19 +1345,14 @@ export int32_t WinMain(
 				ComResult);
 			return STATUS_FAILED_INITILIZATION;
 		}
+		SPDLOG_INFO("Fully initialized COM/OLE");
 
 		// Initialize xed's tables and configure encoder, decoder
 		xed_tables_init();
 		xed_state_init2(&XedConfiguration,
 			XED_MACHINE_MODE_LONG_64,
 			XED_ADDRESS_WIDTH_64b);
-
-		// Initialize and configure spdlog/fmt
-		VisualSinkObject = std::make_shared<ImGuiSpdLogAdaptor>();
-		spdlog::default_logger()->sinks().push_back(VisualSinkObject);
-		spdlog::set_pattern(SPDLOG_SINGULARITY_SMALL_PATTERN);
-		spdlog::set_level(spdlog::level::debug);
-
+		SPDLOG_INFO("Initialized intelxed's decoder/encoder tables");
 
 		// Configure and initialize glfw and imgui
 		glfwSetErrorCallback(GlfwErrorHandlerCallback);
@@ -1325,6 +1361,7 @@ export int32_t WinMain(
 		const char* glsl_version = "#version 130";
 		glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
 		glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
+		SPDLOG_INFO("Initialized glfw opengl backend and installed callback");
 
 		// Create window with graphics context and enable v-sync
 		PrimaryViewPort = glfwCreateWindow(1280, 720, "VisualSingularitry : Bones", NULL, NULL);
@@ -1332,6 +1369,7 @@ export int32_t WinMain(
 			return STATUS_FAILED_INITILIZATION;
 		glfwMakeContextCurrent(PrimaryViewPort);
 		glfwSwapInterval(1);
+		SPDLOG_INFO("Created glfw window context (vsync enabled)");
 
 		// Setup Dear ImGui context and style
 		IMGUI_CHECKVERSION();
@@ -1340,19 +1378,22 @@ export int32_t WinMain(
 		ImguiIo.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 		ImguiIo.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 		// ImguiIo.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+		SPDLOG_INFO("Created and initialized Dear-ImGui context");
 		
 		// When viewports are enabled we tweak WindowRounding/WindowBg so platform windows can look identical to regular ones.
-		ImGui::StyleColorsDark();
 		ImGuiStyle& ImguiStyle = ImGui::GetStyle();
+		ImGui::StyleColorsDark();
 		if (ImguiIo.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
 			
 			ImguiStyle.WindowRounding = 0.0f;
 			ImguiStyle.Colors[ImGuiCol_WindowBg].w = 1.0f;
 		}
+		SPDLOG_INFO("Configured Dear-ImGui style options");
 
 		// Setup Platform/Renderer backends
 		ImGui_ImplGlfw_InitForOpenGL(PrimaryViewPort, true);
 		ImGui_ImplOpenGL3_Init(glsl_version);
+		SPDLOG_INFO("Initialized Dead-ImGui's glfw/opengl3 backend");
 	}
 	catch (const spdlog::spdlog_ex& ExceptionInformation) {
 
@@ -1379,9 +1420,7 @@ export int32_t WinMain(
 		STATE_IMAGE_WAS_PROCESSED
 
 	} ProgramPhase = PHASE_NEUTRAL_STARTUP;
-	
-	
-	
+	SPDLOG_INFO("Initialized and configured VisualSingularity' interface");	
 	
 	// SPDLOG_INFO("Test print with newline\nand "ESC_MAGENTA"magente colored text"ESC_RESET" going back to normal");
 	// SPDLOG_TRACE("This is a test print "ESC_BRIGHTBLUE"with bright blue text\nwrapping around lines,\nand automatic color reset");

@@ -189,6 +189,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="Amd64Lift.ixx" />
     <ClCompile Include="DisasmEngine.ixx" />
     <ClCompile Include="ImguiImpl.ixx" />
     <ClCompile Include="ImageHelp.ixx" />
