@@ -102,7 +102,9 @@
 #endif
 #define SPDLOG_LEVEL_NAMES { "TRACE", "DEBUG", "INFO", "WARNING", "ERROR", "FATAL", "OFF" }
 #define SPDLOG_FMT_EXTERNAL
+#define SPDLOG_DISABLE_DEFAULT_LOGGER
 #include <spdlog/spdlog.h>
+#include <spdlog/async.h>
 
 extern "C" {
 #include <xed/xed-interface.h>

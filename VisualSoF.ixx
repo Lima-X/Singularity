@@ -7,7 +7,7 @@
 #include <backends\imgui_impl_opengl3.h>
 #include <backends\imgui_impl_glfw.h>
 #include <shlobj_core.h>
-#include <spdlog/sinks/base_sink.h>
+#include <spdlog\sinks\base_sink.h>
 
 #include <chrono>
 #include <deque>
@@ -527,7 +527,6 @@ public:
 
 
 	// Oneshot initialization variables, set these before scheduling the object
-	bool EnableMultithreading = false;
 	CodeDiscoveryMode Mode = DISCOVER_USE_HIGHEST_AVAILABLE;
 	const VisualLoadImageObject* LoaderObject = nullptr;
 
@@ -983,7 +982,7 @@ public:
 		TRACE_FUNCTION_PROTO;
 
 		if (ImGui::Begin("Singularity Log", &ShowWindow)) {
-			
+
 			// Options submenu menu
 			if (ImGui::BeginPopup("Options")) {
 
@@ -999,127 +998,140 @@ public:
 			if (ImGui::Button("Clear"))
 				ClearLogBuffers();
 			ImGui::SameLine();
+			ImGui::Text("%d messages logged, using %dmb memory",
+				NumberOfLogEntries,
+				(LoggedContent.size() + IndicesInBytes) / (1024 * 1024));
 
+			// Filter out physical messgaes through logger
 			static const char* LogLevels[] = SPDLOG_LEVEL_NAMES;
+			static const auto LogSelectionWidth = []() -> float {
+				TRACE_FUNCTION_PROTO;
+
+				float LongestTextWidth = 0;
+				for (auto LogLevelText : LogLevels) {
+
+					auto TextWidth = ImGui::CalcTextSize(LogLevelText).x;
+					if (TextWidth > LongestTextWidth)
+						LongestTextWidth = TextWidth;
+				}
+
+				return LongestTextWidth +
+					ImGui::GetStyle().FramePadding.x * 2 +
+					ImGui::GetFrameHeight();
+			}();
+			auto ComboBoxRightAlignment = ImGui::GetWindowSize().x -
+				(LogSelectionWidth + ImGui::GetStyle().WindowPadding.x);
 			auto ActiveLogLevel = spdlog::get_level();
+			ImGui::SetNextItemWidth(LogSelectionWidth);
+			ImGui::SameLine(ComboBoxRightAlignment);
 			ImGui::Combo("##ActiveLogLevel",
 				reinterpret_cast<int32_t*>(&ActiveLogLevel),
 				LogLevels,
 				sizeof(LogLevels) / sizeof(LogLevels[0]));
 			spdlog::set_level(ActiveLogLevel);
-			FilterTextMatch.Draw("##LogFilter");
-			ImGui::SameLine();
-			auto NewFilterLevel = PreviousFilterLevel;
+
+			// Filter out messages on display
+			const std::lock_guard LogLock(sink_t::mutex_);
+			FilterTextMatch.Draw("##LogFilter",
+				ImGui::GetWindowSize().x - (LogSelectionWidth + ImGui::GetStyle().WindowPadding.x * 2 +
+					ImGui::GetStyle().FramePadding.x));
+			ImGui::SetNextItemWidth(LogSelectionWidth);
+			ImGui::SameLine(ComboBoxRightAlignment);
 			ImGui::Combo("##FilterLogLevel",
-				&NewFilterLevel,
+				&FilterLogLevel,
 				LogLevels,
 				sizeof(LogLevels) / sizeof(LogLevels[0]));
+			RebuildFilterWithPreviousStates();
 
-			// Filter by log level with cache, this rebuilds the cache automatically
-			RebuildFilterWithPreviousStates(NewFilterLevel);
-
-			// print log data
-			ImGui::Text("%d messages logged, using %dmb memory",
-				NumberOfLogEntries,
-				(LoggedContent.size() + IndicesInBytes) / (1024 * 1024));
-
-
+			// Draw main log window
 			ImGui::Separator();
-			ImGui::BeginChild("scrolling", ImVec2(0, 0), false,
+			ImGui::BeginChild("LogTextView", ImVec2(0, 0), false,
 				ImGuiWindowFlags_AlwaysVerticalScrollbar | ImGuiWindowFlags_AlwaysHorizontalScrollbar);
-
 			ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
-			const char* buf = LoggedContent.begin();
-			const char* buf_end = LoggedContent.end();
-			const std::lock_guard LogLock(sink_t::mutex_);
-			{
-				
-				ImGuiListClipper ViewClipper;
-				ViewClipper.Begin(static_cast<uint32_t>(LogMetaData.size()));
-				while (ViewClipper.Step()) {
+			ImGuiListClipper ViewClipper;
+			ViewClipper.Begin(FilteredView.size());
+			while (ViewClipper.Step()) {
 
+				int32_t StylesPushedToStack = 0;
+				for (auto ClipperLineNumber = ViewClipper.DisplayStart;
+					ClipperLineNumber < ViewClipper.DisplayEnd;
+					++ClipperLineNumber) {
 
-					int32_t StylesPushedToStack = 0;
-					for (auto ClipperLineNumber = ViewClipper.DisplayStart;
-						ClipperLineNumber < ViewClipper.DisplayEnd;
-						++ClipperLineNumber) {
+					auto& LogMetaDataEntry = LogMetaData[FilteredView[ClipperLineNumber]];
+					if (LogMetaDataEntry.LogLevel == spdlog::level::n_levels)
+						ImGui::Indent();
 
-						if (LogMetaData[ClipperLineNumber].LogLevel == spdlog::level::n_levels)
-							ImGui::Indent();
+					for (auto i = 0; i < LogMetaDataEntry.FormattedStringRanges.size(); ++i) {
 
-						for (auto i = 0; i < LogMetaData[ClipperLineNumber].FormattedStringRanges.size(); ++i) {
+						switch (LogMetaDataEntry.FormattedStringRanges[i].FormatTag) {
+						case FORMAT_RESET_COLORS:
+							ImGui::PopStyleColor(StylesPushedToStack);
+							StylesPushedToStack = 0;
+							break;
 
-							switch (LogMetaData[ClipperLineNumber].FormattedStringRanges[i].FormatTag) {
-							case FORMAT_RESET_COLORS:
-								ImGui::PopStyleColor(StylesPushedToStack);
-								StylesPushedToStack = 0;
-								break;
+						case COLOR_BLACK:
+						case COLOR_RED:
+						case COLOR_GREEN:
+						case COLOR_YELLOW:
+						case COLOR_BLUE:
+						case COLOR_MAGENTA:
+						case COLOR_CYAN:
+						case COLOR_WHITE: {
+							static const ImVec4 BasicColorsToVec[]{
+								{ 0.0f, 0.0f, 0.0f, 1 }, // COLOR_BLACK
+								{ 0.5f, 0.0f, 0.0f, 1 }, // COLOR_RED
+								{ 0.0f, 0.7f, 0.0f, 1 }, // COLOR_GREEN
+								{ 0.7f, 0.7f, 0.0f, 1 }, // COLOR_YELLOW
+								{ 0.0f, 0.0f, 0.7f, 1 }, // COLOR_BLUE
+								{ 0.7f, 0.0f, 0.7f, 1 }, // COLOR_MAGENTA
+								{ 0.0f, 0.7f, 0.7f, 1 }, // COLOR_CYAN
+								{ 0.7f, 0.7f, 0.7f, 1 }  // COLOR_WHITE
+							};
+							ImGui::PushStyleColor(ImGuiCol_Text,
+								BasicColorsToVec[LogMetaDataEntry.FormattedStringRanges[i].FormatTag - COLOR_BLACK]);
+							++StylesPushedToStack;
+						} break;
 
-							case COLOR_BLACK: 
-							case COLOR_RED: 
-							case COLOR_GREEN: 
-							case COLOR_YELLOW: 
-							case COLOR_BLUE: 
-							case COLOR_MAGENTA: 
-							case COLOR_CYAN: 
-							case COLOR_WHITE: {
-								static const ImVec4 BasicColorsToVec[]{
-									{ 0.0f, 0.0f, 0.0f, 1 }, // COLOR_BLACK
-									{ 0.5f, 0.0f, 0.0f, 1 }, // COLOR_RED
-									{ 0.0f, 0.7f, 0.0f, 1 }, // COLOR_GREEN
-									{ 0.7f, 0.7f, 0.0f, 1 }, // COLOR_YELLOW
-									{ 0.0f, 0.0f, 0.7f, 1 }, // COLOR_BLUE
-									{ 0.7f, 0.0f, 0.7f, 1 }, // COLOR_MAGENTA
-									{ 0.0f, 0.7f, 0.7f, 1 }, // COLOR_CYAN
-									{ 0.7f, 0.7f, 0.7f, 1 }  // COLOR_WHITE
-								};
-								ImGui::PushStyleColor(ImGuiCol_Text,
-									BasicColorsToVec[LogMetaData[ClipperLineNumber].FormattedStringRanges[i].FormatTag - COLOR_BLACK]);
-								++StylesPushedToStack;
-								break;
-							}
-							case COLOR_BRIGHTBLACK: 
-							case COLOR_BRIGHTRED: 
-							case COLOR_BRIGHTGREEN: 
-							case COLOR_BRIGHTYELLOW: 
-							case COLOR_BRIGHTBLUE: 
-							case COLOR_BRIGHTMAGENTA: 
-							case COLOR_BRIGHTCYAN: 
-							case COLOR_BRIGHTWHITE: {
-								static const ImVec4 BrightColorsToVec[]{
-									{ 0, 0, 0, 1 }, // COLOR_BRIGHTBLACK
-									{ 1, 0, 0, 1 }, // COLOR_BRIGHTRED
-									{ 0, 1, 0, 1 }, // COLOR_BRIGHTGREEN
-									{ 1, 1, 0, 1 }, // COLOR_BRIGHTYELLOW
-									{ 0, 0, 1, 1 }, // COLOR_BRIGHTBLUE
-									{ 1, 0, 1, 1 }, // COLOR_BRIGHTMAGENTA
-									{ 0, 1, 1, 1 }, // COLOR_BRIGHTCYAN
-									{ 1, 1, 1, 1 }  // COLOR_BRIGHTWHITE
-								};
-								ImGui::PushStyleColor(ImGuiCol_Text,
-									BrightColorsToVec[LogMetaData[ClipperLineNumber].FormattedStringRanges[i].FormatTag - COLOR_BRIGHTBLACK]);
-								++StylesPushedToStack;
-								break;
-							}}
+						case COLOR_BRIGHTBLACK:
+						case COLOR_BRIGHTRED:
+						case COLOR_BRIGHTGREEN:
+						case COLOR_BRIGHTYELLOW:
+						case COLOR_BRIGHTBLUE:
+						case COLOR_BRIGHTMAGENTA:
+						case COLOR_BRIGHTCYAN:
+						case COLOR_BRIGHTWHITE: {
+							static const ImVec4 BrightColorsToVec[]{
+								{ 0, 0, 0, 1 }, // COLOR_BRIGHTBLACK
+								{ 1, 0, 0, 1 }, // COLOR_BRIGHTRED
+								{ 0, 1, 0, 1 }, // COLOR_BRIGHTGREEN
+								{ 1, 1, 0, 1 }, // COLOR_BRIGHTYELLOW
+								{ 0, 0, 1, 1 }, // COLOR_BRIGHTBLUE
+								{ 1, 0, 1, 1 }, // COLOR_BRIGHTMAGENTA
+								{ 0, 1, 1, 1 }, // COLOR_BRIGHTCYAN
+								{ 1, 1, 1, 1 }  // COLOR_BRIGHTWHITE
+							};
+							ImGui::PushStyleColor(ImGuiCol_Text,
+								BrightColorsToVec[LogMetaDataEntry.FormattedStringRanges[i].FormatTag - COLOR_BRIGHTBLACK]);
+							++StylesPushedToStack;
+						}}
 
-							auto FormatRangeBegin = LoggedContent.begin() +
-								LogMetaData[ClipperLineNumber].FormattedStringRanges[i].SubStringBegin +
-								LogMetaData[ClipperLineNumber].BeginIndex;
-							auto FormatRangeEnd = LoggedContent.begin() +
-								LogMetaData[ClipperLineNumber].FormattedStringRanges[i].SubStringEnd +
-								LogMetaData[ClipperLineNumber].BeginIndex;
-							ImGui::TextUnformatted(FormatRangeBegin, FormatRangeEnd);
-							if (LogMetaData[ClipperLineNumber].FormattedStringRanges.size() - (i + 1))
-								ImGui::SameLine();
-						}
-
-						if (LogMetaData[ClipperLineNumber].LogLevel == spdlog::level::n_levels)
-							ImGui::Unindent();
+						auto FormatRangeBegin = LoggedContent.begin() +
+							LogMetaDataEntry.BeginIndex +
+						LogMetaDataEntry.FormattedStringRanges[i].SubStringBegin;
+						auto FormatRangeEnd = LoggedContent.begin() +
+							LogMetaDataEntry.BeginIndex +
+							LogMetaDataEntry.FormattedStringRanges[i].SubStringEnd;
+						ImGui::TextUnformatted(FormatRangeBegin, FormatRangeEnd);
+						if (LogMetaDataEntry.FormattedStringRanges.size() - (i + 1))
+							ImGui::SameLine();
 					}
-					ImGui::PopStyleColor(StylesPushedToStack);
+
+					if (LogMetaDataEntry.LogLevel == spdlog::level::n_levels)
+						ImGui::Unindent();
 				}
-				ViewClipper.End();
+				ImGui::PopStyleColor(StylesPushedToStack);
 			}
+			ViewClipper.End();
 			ImGui::PopStyleVar();
 
 			if (EnableAutoScrolling &&
@@ -1128,6 +1140,7 @@ public:
 
 			ImGui::EndChild();
 		}
+
 		ImGui::End();
 	}
 
@@ -1178,6 +1191,9 @@ protected:
 			ColorToEscapeSequence[LogMessage.level]);
 		FormattedText.insert(LogMessage.color_range_end + 5,
 			"\x1b[0m");
+		bool FilterPassing = LogMessage.level >= FilterLogLevel;
+		FilterPassing &= FilterTextMatch.PassFilter(FormattedText.c_str(),
+			FormattedText.c_str() + FormattedText.size());
 
 		// Parse formatted logged string for ansi escape sequences
 		auto OldTextBufferSize = LoggedContent.size();
@@ -1209,7 +1225,10 @@ protected:
 				// the next logically text line if necessary and reconfigure pushstate
 				if (MessageData2.FormattedStringRanges.size())
 					MessageData2.FormattedStringRanges.back().SubStringEnd = i;
+				if (FilterPassing)
+					FilteredView.push_back(LogMetaData.size());
 				LogMetaData.push_back(MessageData2);
+
 				IndicesInBytes += MessageData2.FormattedStringRanges.size() *
 					sizeof(SinkLineContent::ColorDataRanges) +
 					sizeof(SinkLineContent);
@@ -1259,17 +1278,57 @@ protected:
 	void flush_() { TRACE_FUNCTION_PROTO; }
 
 private:
-	void RebuildFilterWithPreviousStates(
-		IN int32_t NewFilterLevel
-	) {
+
+	// TODO: Need to implement double buffering for the filter
+	void RebuildFilterWithPreviousStates() {
 		TRACE_FUNCTION_PROTO;
 
-		bool FullRebuild = NewFilterLevel != PreviousFilterLevel;
-		PreviousFilterLevel = NewFilterLevel;
+		int32_t RebuildType = PreviousFilterLevel != FilterLogLevel;
+		RebuildType |= memcmp(PreviousFilterText,
+			FilterTextMatch.InputBuf,
+			sizeof(PreviousFilterText));
 
-		bool PartialRebuild = PreviousIndices != LogMetaData.size();
-		PreviousIndices = LogMetaData.size();
+		if (RebuildType) {
+
+			// Filter was completely changed, have to rebuild array (very expensive,
+			//	this may result in short freezes or stuttering on really large logs,
+			//	one way to solve this could be to defer the calculation of the filter view
+			//	to a thread pool and use a double buffering mechanism)
+
+			auto NewLinePasses = false;
+			FilteredView.clear();
+			for (auto i = 0; i < LogMetaData.size(); ++i) {
+
+				if (LogMetaData[i].LogLevel == spdlog::level::n_levels) {
+
+					if (NewLinePasses)
+						FilteredView.push_back(i);
+					continue;
+				}
+
+				if (LogMetaData[i].LogLevel < FilterLogLevel) {
+					NewLinePasses = false; continue;
+				}
+
+				auto LineBegin = LoggedContent.begin() +
+					LogMetaData[i].BeginIndex +
+					LogMetaData[i].FormattedStringRanges.front().SubStringBegin;
+				auto LineEnd = LoggedContent.begin() +
+					LogMetaData[i].BeginIndex +
+					LogMetaData[i].FormattedStringRanges.back().SubStringEnd;
+				if (!FilterTextMatch.PassFilter(LineBegin, LineEnd)) {
+					NewLinePasses = false; continue;
+				}
+
+				NewLinePasses = true;
+				FilteredView.push_back(i);
+			}
+		}
 		
+		PreviousFilterLevel = FilterLogLevel;
+		memcpy(PreviousFilterText,
+			FilterTextMatch.InputBuf,
+			sizeof(PreviousFilterText));
 	}
 
 	// Using faster more efficient replacements of stl types for rendering
@@ -1280,6 +1339,7 @@ private:
 	ImGuiTextFilter   FilterTextMatch;
 	ImVector<int32_t> FilteredView;           // A filtered array of indexes into the LogMetaData vector
 											  // this view is calculated once any filter changes
+	int32_t  FilterLogLevel = spdlog::level::trace;
 	uint32_t NumberOfLogEntries = 0;          // Counts the number of entries logged
 	uint32_t IndicesInBytes = 0;              // Keeps track of the amount of memory allocated by indices
 	bool     EnableAutoScrolling = true;
@@ -1287,8 +1347,7 @@ private:
 	// Previous Frame's filterdata, if any of these change to the new values the filter has to be recalculated
 	int32_t PreviousFilterLevel = spdlog::level::trace;
 	decltype(ImGuiTextFilter::InputBuf)
-		PreviosuFilterText{};
-	int32_t PreviousIndices = 0;
+		PreviousFilterText{};
 };
 
 
@@ -1319,21 +1378,20 @@ export int32_t WinMain(
 
 	// Instantiate prerequisites such as loggers and external libraries
 	// ConsoleModifier ScopedConsole;
-	spdlog::sink_ptr VisualSinkObject;
+	std::shared_ptr<spdlog::logger> VisualSingularityLogger;
 	GLFWwindow* PrimaryViewPort;
 	xed_state_t XedConfiguration;
 	try {
 		// Initialize and configure spdlog/fmt logger
-		VisualSinkObject = std::make_shared<ImGuiSpdLogAdaptor>();
-		spdlog::default_logger()->sinks().push_back(VisualSinkObject);
+		spdlog::init_thread_pool(65536, 1);
+		VisualSingularityLogger = spdlog::create_async<ImGuiSpdLogAdaptor>("VSOFL");
+		spdlog::set_default_logger(VisualSingularityLogger);
 		spdlog::set_pattern(SPDLOG_SINGULARITY_SMALL_PATTERN);
 #ifdef NDEBUG
 		spdlog::set_level(spdlog::level::info);
 #else
 		spdlog::set_level(spdlog::level::debug);
 #endif
-		// check if there is a console attached and disconnect all the console sink
-		spdlog::default_logger()->sinks().erase(spdlog::default_logger()->sinks().begin());
 		SPDLOG_INFO("Initilialized singularity obfuscation framework logger");
 
 		// Initialize COM / OLE Components
@@ -1383,6 +1441,7 @@ export int32_t WinMain(
 		// When viewports are enabled we tweak WindowRounding/WindowBg so platform windows can look identical to regular ones.
 		ImGuiStyle& ImguiStyle = ImGui::GetStyle();
 		ImGui::StyleColorsDark();
+		ImguiStyle.FrameBorderSize = 1;
 		if (ImguiIo.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
 			
 			ImguiStyle.WindowRounding = 0.0f;
@@ -1393,7 +1452,7 @@ export int32_t WinMain(
 		// Setup Platform/Renderer backends
 		ImGui_ImplGlfw_InitForOpenGL(PrimaryViewPort, true);
 		ImGui_ImplOpenGL3_Init(glsl_version);
-		SPDLOG_INFO("Initialized Dead-ImGui's glfw/opengl3 backend");
+		SPDLOG_INFO("Initialized Dear-ImGui's glfw/opengl3 backend");
 	}
 	catch (const spdlog::spdlog_ex& ExceptionInformation) {
 
@@ -1409,7 +1468,7 @@ export int32_t WinMain(
 	// are partially restricted in the sense that they don't allow full control of the api.
 	VisualSingularityApp SingularityApiController(0);
 	VisualTrackerApp DataTrackLog(SingularityApiController);
-	auto VisualLogger = static_cast<ImGuiSpdLogAdaptor*>(VisualSinkObject.get());
+	auto VisualLogger = static_cast<ImGuiSpdLogAdaptor*>(VisualSingularityLogger->sinks()[0].get());
 	enum ImmediateProgramPhase {
 		PHASE_NEUTRAL_STARTUP = 0,
 		STATE_WAITING_INPUTFILE_DLG,
@@ -1464,7 +1523,6 @@ export int32_t WinMain(
 				static char PathToPdb[MAX_PATH]{};
 				static char OutputPath[MAX_PATH]{};
 				static bool LoadWithPdb = true;
-				static bool AnalysisMultithreaded = false;
 				{
 					static const VisualOpenFileObject* LastFileOpenDialog = nullptr;
 					static bool EnableLastErrorMessage = false;
@@ -1630,17 +1688,13 @@ export int32_t WinMain(
 					ImGui::Spacing();
 
 					// Virtual spooling and load controls
-					static ImU32 SliderValue = 0;
-					static const ImU32 SliderMin = 0;
 					static const ImU32 SliderMax = UINT32_MAX / 2;
-					ImGui::BeginDisabled(AnalysisMultithreaded && 
-						ProgramPhase >= STATE_IMAGE_LOADED_WAITING);
+					static const ImU32 SliderMin = 0;
+					static ImU32 SliderValue = 0;
 					ImGui::SliderScalar("Virtual wait timer...", ImGuiDataType_U32,
 						&SliderValue, &SliderMin, &SliderMax,
 						"%d us", ImGuiSliderFlags_Logarithmic);
-					DataTrackLog.VirtualSleepSliderInUs = AnalysisMultithreaded &&
-						ProgramPhase >= STATE_IMAGE_LOADED_WAITING ? 0 : SliderValue;
-					ImGui::EndDisabled();
+					DataTrackLog.VirtualSleepSliderInUs = SliderValue;
 					ImGui::SameLine();
 					HelpMarker("Virtual time spooling can make use of an sleeping spinlocking hybrid interval timer, "
 						"this can result in cpu thrashing as its extremely hard on a core while waiting a very short interval.\n"
@@ -1817,18 +1871,11 @@ export int32_t WinMain(
 					HelpMarker("Selects how the engine should search for code, "
 						"if non is selected the highest available is chosen by default");
 
-					ImGui::Checkbox("Enable multithreading", &AnalysisMultithreaded);
-					ImGui::SameLine();
-					HelpMarker("Configures the controller to schedule individual functions on the thread pool,"
-						"instead of looping through them.\n"
-						"This settings disables the virtual time spooling, due to cpu thrashing");
-					
 					if (ImGui::Button("Run Analysis")) {
 
 						// Initialalize substation
 
 						auto SOBPassUnqueuedObject = std::make_unique<VisualSOPassObject>(&DataTrackLog);
-						SOBPassUnqueuedObject->EnableMultithreading = AnalysisMultithreaded;
 						SOBPassUnqueuedObject->LoaderObject = LoaderObjectState;
 
 						MainSOBPassObject = SingularityApiController.QueueMainPassProcessObject(
@@ -1906,14 +1953,13 @@ export int32_t WinMain(
 		__debugbreak();
 	}
 
-
 	// Cleanup
 	ImGui_ImplOpenGL3_Shutdown();
 	ImGui_ImplGlfw_Shutdown();
 	ImGui::DestroyContext();
-
 	glfwDestroyWindow(PrimaryViewPort);
 	glfwTerminate();
+	spdlog::shutdown();
 
 	return STATUS_SUCCESS;
 }

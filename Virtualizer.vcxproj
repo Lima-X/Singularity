@@ -101,7 +101,7 @@
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpplatest</LanguageStandard>
       <LanguageStandard_C>stdc17</LanguageStandard_C>
-      <AdditionalIncludeDirectories>$(SolutionDir)xed\out\include;$(SolutionDir)fmt\include;$(SolutionDir)spdlog\include;$(SolutionDir)glfw\include;$(SolutionDir)imgui;$(VSInstallDir)DIA SDK\include</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)xed\include;$(SolutionDir)fmt\include;$(SolutionDir)spdlog\include;$(SolutionDir)glfw\include;$(SolutionDir)imgui;$(VSInstallDir)DIA SDK\include</AdditionalIncludeDirectories>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
@@ -109,7 +109,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>DebugFull</GenerateDebugInformation>
-      <AdditionalDependencies>$(SolutionDir)xed\out\lib\xed.lib;$(SolutionDir)fmt\Release\fmt.lib;$(SolutionDir)spdlog\Release\spdlog.lib;$(SolutionDir)glfw\src\Release\glfw3.lib;opengl32.lib;onecore.lib;gdi32.lib;$(VSInstallDir)DIA SDK\lib\amd64\diaguids.lib</AdditionalDependencies>
+      <AdditionalDependencies>$(SolutionDir)xed\lib\xed.lib;$(SolutionDir)fmt\Release\fmt.lib;$(SolutionDir)spdlog\Release\spdlog.lib;$(SolutionDir)glfw\src\Release\glfw3.lib;opengl32.lib;onecore.lib;gdi32.lib;$(VSInstallDir)DIA SDK\lib\amd64\diaguids.lib</AdditionalDependencies>
       <AdditionalOptions>/pdbaltpath:%_PDB% %(AdditionalOptions)</AdditionalOptions>
     </Link>
   </ItemDefinitionGroup>
@@ -122,7 +122,7 @@
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpplatest</LanguageStandard>
       <LanguageStandard_C>stdc17</LanguageStandard_C>
-      <AdditionalIncludeDirectories>$(SolutionDir)xed\out\include;$(SolutionDir)fmt\include;$(SolutionDir)spdlog\include;$(SolutionDir)glfw\include;$(SolutionDir)imgui;$(VSInstallDir)DIA SDK\include</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)xed\include;$(SolutionDir)fmt\include;$(SolutionDir)spdlog\include;$(SolutionDir)glfw\include;$(SolutionDir)imgui;$(VSInstallDir)DIA SDK\include</AdditionalIncludeDirectories>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
@@ -134,7 +134,7 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>DebugFull</GenerateDebugInformation>
-      <AdditionalDependencies>$(SolutionDir)xed\out\lib\xed.lib;$(SolutionDir)fmt\Release\fmt.lib;$(SolutionDir)spdlog\Release\spdlog.lib;$(SolutionDir)glfw\src\Release\glfw3.lib;opengl32.lib;onecore.lib;gdi32.lib;$(VSInstallDir)DIA SDK\lib\amd64\diaguids.lib</AdditionalDependencies>
+      <AdditionalDependencies>$(SolutionDir)xed\lib\xed.lib;$(SolutionDir)fmt\Release\fmt.lib;$(SolutionDir)spdlog\Release\spdlog.lib;$(SolutionDir)glfw\src\Release\glfw3.lib;opengl32.lib;onecore.lib;gdi32.lib;$(VSInstallDir)DIA SDK\lib\amd64\diaguids.lib</AdditionalDependencies>
       <AdditionalOptions>/pdbaltpath:%_PDB% %(AdditionalOptions)</AdditionalOptions>
     </Link>
   </ItemDefinitionGroup>
@@ -147,7 +147,7 @@
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpplatest</LanguageStandard>
       <LanguageStandard_C>stdc17</LanguageStandard_C>
-      <AdditionalIncludeDirectories>$(SolutionDir)xed\out\include;$(SolutionDir)fmt\include;$(SolutionDir)spdlog\include;$(SolutionDir)glfw\include;$(SolutionDir)imgui;$(VSInstallDir)DIA SDK\include</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)xed\include;$(SolutionDir)fmt\include;$(SolutionDir)spdlog\include;$(SolutionDir)glfw\include;$(SolutionDir)imgui;$(VSInstallDir)DIA SDK\include</AdditionalIncludeDirectories>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
@@ -159,7 +159,7 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>DebugFull</GenerateDebugInformation>
-      <AdditionalDependencies>$(SolutionDir)xed\out\lib\xed.lib;$(SolutionDir)fmt\Release\fmt.lib;$(SolutionDir)spdlog\Release\spdlog.lib;$(SolutionDir)glfw\src\Release\glfw3.lib;opengl32.lib;onecore.lib;gdi32.lib;$(VSInstallDir)DIA SDK\lib\amd64\diaguids.lib</AdditionalDependencies>
+      <AdditionalDependencies>$(SolutionDir)xed\lib\xed.lib;$(SolutionDir)fmt\Release\fmt.lib;$(SolutionDir)spdlog\Release\spdlog.lib;$(SolutionDir)glfw\src\Release\glfw3.lib;opengl32.lib;onecore.lib;gdi32.lib;$(VSInstallDir)DIA SDK\lib\amd64\diaguids.lib</AdditionalDependencies>
       <AdditionalOptions>/pdbaltpath:%_PDB% %(AdditionalOptions)</AdditionalOptions>
     </Link>
   </ItemDefinitionGroup>
@@ -172,7 +172,7 @@
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpplatest</LanguageStandard>
       <LanguageStandard_C>stdc17</LanguageStandard_C>
-      <AdditionalIncludeDirectories>$(SolutionDir)xed\out\include;$(SolutionDir)fmt\include;$(SolutionDir)spdlog\include;$(SolutionDir)glfw\include;$(SolutionDir)imgui;$(VSInstallDir)DIA SDK\include</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)xed\include;$(SolutionDir)fmt\include;$(SolutionDir)spdlog\include;$(SolutionDir)glfw\include;$(SolutionDir)imgui;$(VSInstallDir)DIA SDK\include</AdditionalIncludeDirectories>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
@@ -184,7 +184,7 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>DebugFull</GenerateDebugInformation>
-      <AdditionalDependencies>$(SolutionDir)xed\out\lib\xed.lib;$(SolutionDir)fmt\Release\fmt.lib;$(SolutionDir)spdlog\Release\spdlog.lib;$(SolutionDir)glfw\src\Release\glfw3.lib;opengl32.lib;onecore.lib;gdi32.lib;$(VSInstallDir)DIA SDK\lib\amd64\diaguids.lib</AdditionalDependencies>
+      <AdditionalDependencies>$(SolutionDir)xed\lib\xed.lib;$(SolutionDir)fmt\Release\fmt.lib;$(SolutionDir)spdlog\Release\spdlog.lib;$(SolutionDir)glfw\src\Release\glfw3.lib;opengl32.lib;onecore.lib;gdi32.lib;$(VSInstallDir)DIA SDK\lib\amd64\diaguids.lib</AdditionalDependencies>
       <AdditionalOptions>/pdbaltpath:%_PDB% %(AdditionalOptions)</AdditionalOptions>
     </Link>
   </ItemDefinitionGroup>

@@ -16,7 +16,11 @@ void Call3();
 void Call4();
 void Call5();
 void Call9();
+
+#pragma optimize("", off)
 void MsvcX64JumptableTest() {
+	
+	SingularityVirtualCodeBegin();
 	switch (SwitchSelect) {
 	case 0: Call0(); break;
 	case 1: Call1(); break;
@@ -27,9 +31,9 @@ void MsvcX64JumptableTest() {
 	default:
 		Call9();
 	}
+	SingularityVirtualCodeEnd();
 }
 
-#pragma optimize("", off)
 int TestFunction(
 	IN int Argument
 ) {

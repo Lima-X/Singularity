@@ -16,23 +16,23 @@ rem After xed finished mbuild can be reomoved again and vcvars64 will be loaded
 if not exist ".\mbuild" (
 	git clone https://github.com/intelxed/mbuild
 )
-python .\xed\mfile.py --install-dir=".\xed\out" install
-rd /s /q obj
+cd ".\xed"
+python .\mfile.py --install-dir="." install
 call vcvars64.bat
 
 rem glfw has to be also build now, as this project is moving to gui for debugging
 cd "..\glfw"
-cmake . -D USE_MSVC_RUNTIME_LIBRARY_DLL=OFF
+cmake . -DUSE_MSVC_RUNTIME_LIBRARY_DLL=OFF
 msbuild ".\src\glfw.vcxproj" -p:Configuration=Release
 
 rem The shitty hack has been fixed, this now forces the creation with MT
 cd "..\fmt"
-cmake . -D CMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded"
+cmake . -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded"
 msbuild ".\fmt.vcxproj" -p:Configuration=Release
 
 rem Following spdlog can be build afterwards
 cd "..\spdlog"
-cmake . -D CMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded"
+cmake . -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded" -DSPDLOG_FMT_EXTERNAL=ON -Dfmt_DIR="..\fmt"
 msbuild ".\spdlog.vcxproj" -p:Configuration=Release
 
 rem Additionally the sdk for importing projects will be "build" (more like prepared)

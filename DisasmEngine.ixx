@@ -960,8 +960,6 @@ private:
 			}
 		}
 
-		// If we do not find 
-		CfgNodeForCurrentFrame->SetNodeIsIncomplete();
 		SPDLOG_WARN("Could not resolve jumptable, continuing to resolve tree partially");
 		return false;
 

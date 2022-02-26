@@ -1,0 +1,4 @@
+// This resource script defines and imports various resources visual singularity may rely on,
+// or for that matter the wholoe framework itself.
+
+#define SINGULARITY_VM0 0
