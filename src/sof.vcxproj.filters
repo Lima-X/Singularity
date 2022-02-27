@@ -15,27 +15,51 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="ImageHelp.ixx">
+    <ClCompile Include="amd64.disasm.ixx">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="SymbolHelp.ixx">
+    <ClCompile Include="amd64.lift.ixx">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="ImguiImpl.ixx">
+    <ClCompile Include="control.tasks.ixx">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="DisasmEngine.ixx">
+    <ClCompile Include="help.symbol.ixx">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="VisualSoF.ixx">
+    <ClCompile Include="imgui.impl.ixx">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="Amd64Lift.ixx">
+    <ClCompile Include="sof.base.ixx">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="sof.llir.ixx">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="image.edit.ixx">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="image.load.ixx">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="control.cli.ixx">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="control.ixx">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="control.gui.ixx">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="VirtualizerBase.h">
+    <ClInclude Include="..\include\sof\odk.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\include\sof\sdk.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\include\sof\sof.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

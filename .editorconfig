@@ -2,7 +2,7 @@
 root = true
 
 # For any file in this project the following should apply
-[*]
+[*.{ixx,cpp,cc,c,h,hpp}]
 indent_style = tab
 indent_size = 4
 tab_width = 4

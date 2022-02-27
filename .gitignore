@@ -22,7 +22,7 @@ lvmlib64.lib
 mono_crash.*
 
 # Build results
-Output/
+out/
 [Dd]ebug/
 [Dd]ebugPublic/
 [Rr]elease/

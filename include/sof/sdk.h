@@ -1,4 +1,6 @@
-// Singularity project SDK, this implements all the interfaces required by the to be obfuscated module
+// Software Development Kit - The public sof include file used to obfuscate software,
+// this include provides all the application required interfaces to mark code
+// and tell sof how to deal with it later during obfuscation passes
 #pragma once
 
 #ifdef __cplusplus

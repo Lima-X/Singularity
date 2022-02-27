@@ -3,7 +3,7 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.32014.148
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Virtualizer", "Virtualizer.vcxproj", "{F7558596-6580-43F5-A8C1-BEF58E7412DF}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SOF", "src\sof.vcxproj", "{F7558596-6580-43F5-A8C1-BEF58E7412DF}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

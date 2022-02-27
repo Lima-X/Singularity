@@ -20,12 +20,17 @@
 #pragma endregion
 
 #pragma region Disabled warnings and other pragmas
+#ifndef SOFP_DONT_DISABLE_WARNINGS
+
 // Disable anonymous class type warning, supported by all major compilers
 #pragma warning(disable : 4201)
 
+#endif
 #pragma endregion
 
 #pragma region Import and configure windows.h
+#ifndef SOFP_NO_WINDOWS_DOT_H
+
 // Disable specific API sets to reduce header size
 //	#define NOGDICAPMASKS     // CC_*, LC_*, PC_*, CP_*, TC_*, RC_
 	#define NOVIRTUALKEYCODES // VK_*
@@ -81,12 +86,17 @@
 #include <atlbase.h>
 #include <timeapi.h>
 
+#endif
 #pragma endregion
 
 #pragma region LibC and STL base includes
 // Configure base includes for shared base and libc
+#ifndef SOFP_NO_CRT_SECURE
 #define _CRT_SECURE_NO_WARNINGS
+#endif
 #include <intrin.h>
+#include <chrono>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <utility>
@@ -94,6 +104,8 @@
 #pragma endregion
 
 #pragma region Import external dependencies
+#ifndef SOFP_NO_EXTERNAL_INCLUDES
+
 // Configure and import external legacy libraries
 #ifndef NDEBUG
 #define SPDLOG_ACTIVE_LEVEL SPDLOG_LEVEL_TRACE
@@ -109,9 +121,13 @@
 extern "C" {
 #include <xed/xed-interface.h>
 }
+
+#endif
 #pragma endregion
 
 #pragma region Logging macros and enums
+#ifndef SOFP_NO_LOGGER_ESCAPE
+
 // Special function trace logger insert/implant, use this in every functions head.
 // Currently does nothing, to be implemented.
 #define TRACE_FUNCTION_PROTO static_cast<void>(0)
@@ -157,195 +173,17 @@ enum AnsiEscapeSequenceTag : int32_t {
 
 // Define the general logger pattern used by the library
 #define SPDLOG_SINGULARITY_SMALL_PATTERN \
-	"[ %^%=l%$ : "ESC_YELLOW"%t"ESC_RESET" ] %v"
+	"[ %^%=l%$ : " ESC_YELLOW"%t" ESC_RESET" ] %v"
+
+#endif
 #pragma endregion
 
-#pragma region Singularity types and helpers
 // Legacy style type helpers
 #define OFFSET_OF offsetof
-enum {
-	PAGE_SIZE = 4096,
-	LARGE_PAGE = 2097152,
-	PAGE_GRANULARITY = 65536,
-};
 
-// Project specific types with special meaning
-using ulong_t = unsigned long;
-using long_t = signed long;
-using offset_t = ptrdiff_t;            // Type used to store an offset with a maximum capacity of the architectures size
-using byte_t = uint8_t;                // Type used to store arbitrary data in the form of a byte with 8 bits
-using rva_t = long_t;                  // Type used to describe a 31bit image relative offset, anything negative is invalid
-using disp_t = long_t;                 // Type used to represent a 32bit displacement
-using token_t = size_t;                // Type used for tokenized ids, each token is unique to in the process lifetime
-#pragma endregion
+namespace chrono = std::chrono;
+namespace filesystem = std::filesystem;
 
-#pragma region Active template library components
-
-#pragma region Smartpointer abstractions for VirtualAlloc
-class VirtualDeleter {
-public:
-	void operator()(
-		IN byte_t* VirtualAddress
-		) {
-		VirtualFree(VirtualAddress,
-			0,
-			MEM_RELEASE);
-	}
-};
-template<template<typename T2, class D> class T>
-class VirtualPointer final :
-	public T<byte_t[], VirtualDeleter> {
-	using BaseType = T<byte_t[], VirtualDeleter>;
-public:
-	// BUG: Due to a bug in MSVC version 19.30.30709 (shipped with VS 17.0.5) and down,
-	// the using below causes a internal compiler bug, resulting in an error
-	// as a workaround for now a forwarding constructor template is provided:
-	// using BaseType::BaseType;
-	template<typename... Args>
-	VirtualPointer(Args... Arguments) :
-		BaseType(std::forward<Args>(Arguments)...) {
-		TRACE_FUNCTION_PROTO;
-	}
-
-	void* CommitVirtualRange(
-		IN byte_t* VirtualAddress,
-		IN size_t  VirtualRange,
-		IN DWORD   Win32PageProtection = PAGE_READWRITE
-	) {
-		return VirtualAlloc(VirtualAddress,
-			VirtualRange,
-			MEM_COMMIT,
-			Win32PageProtection);
-	}
-};
-
-template<template<typename, class> class T>
-VirtualPointer<T>
-MakeSmartPointerWithVirtualAlloc(
-	IN void* DesiredAddress,
-	IN size_t SizeOfBuffer,
-	IN DWORD  Wint32AllocationType = MEM_RESERVE | MEM_COMMIT,
-	IN DWORD  Win32PageProtection = PAGE_READWRITE
-) {
-	return VirtualPointer<T>(
-		static_cast<byte_t*>(
-			VirtualAlloc(DesiredAddress,
-				SizeOfBuffer,
-				Wint32AllocationType,
-				Win32PageProtection)));
-}
-#pragma endregion
-
-// CRTP helper for abstracting and adding skills to a CRTP base
-template<typename T>
-class CrtpHelp {
-public:
-	T& GetUnderlyingCrtpBase() {
-		TRACE_FUNCTION_PROTO; return static_cast<T&>(*this);
-	}
-	const T& GetUnderlyingCrtpBase() const {
-		TRACE_FUNCTION_PROTO; return static_cast<const T&>(*this);
-	}
-};
-#pragma endregion
-
-#pragma region Singularitys common exception type
-class CommonExceptionType {
-public:
-	using UnderlyingType = int32_t;
-
-	enum ExceptionTypeTag {
-		EXCPETION_UNSPECIFIED = 0,
-		EXCEPTION_IMAGE_HELP,
-		EXCEPTION_CFG_TOOLSET,
-		EXCEPTION_COMOLE_EXP,
-		EXCEPTION_VISUAL_APP,
-	};
-
-	CommonExceptionType(
-		IN const std::string_view& ExceptionText,
-		IN       UnderlyingType    Exception,
-		IN       ExceptionTypeTag  ExceptionTag
-	)
-		: ExceptionText(ExceptionText),
-		  StatusCode(Exception),
-		  ExceptionTag(ExceptionTag) {
-		TRACE_FUNCTION_PROTO;
-	}
-
-	const std::string      ExceptionText;
-	const UnderlyingType   StatusCode;
-	const ExceptionTypeTag ExceptionTag;
-};
-#pragma endregion
-
-#pragma region Unicode and partial-utf8/ansi conversions
-using UnicodeString = std::wstring;
-using UnicodeView = std::wstring_view;
-
-// Beyond ugly, partially utf8 aware, ansi to and from unicode converters
-inline UnicodeString ConvertAnsiToUnicode(
-	IN const std::string_view& AnsiToUnicodeString
-) {
-	TRACE_FUNCTION_PROTO;
-
-	if (AnsiToUnicodeString.empty())
-		return {};
-	auto RequiredBufferSize = MultiByteToWideChar(CP_UTF8, 0,
-		AnsiToUnicodeString.data(),
-		static_cast<int32_t>(AnsiToUnicodeString.size()),
-		nullptr, 0);
-	if (!RequiredBufferSize)
-		throw std::runtime_error("Could not calculate required string length");
-	UnicodeString ResultString;
-	ResultString.resize(RequiredBufferSize);
-	RequiredBufferSize = MultiByteToWideChar(CP_UTF8, 0,
-		AnsiToUnicodeString.data(),
-		static_cast<int32_t>(AnsiToUnicodeString.size()),
-		ResultString.data(),
-		static_cast<int32_t>(ResultString.capacity()));
-	return ResultString;
-}
-inline std::string ConvertUnicodeToAnsi(
-	IN const UnicodeView& UnicodeToAnsiString
-) {
-	TRACE_FUNCTION_PROTO;
-	if (UnicodeToAnsiString.empty())
-		return {};
-	auto RequiredBufferSize = WideCharToMultiByte(CP_UTF8, 0,
-		UnicodeToAnsiString.data(),
-		static_cast<int32_t>(UnicodeToAnsiString.size()),
-		nullptr, 0,
-		nullptr, nullptr);
-	if (!RequiredBufferSize)
-		throw std::runtime_error("Could not calculate required string length");
-
-	std::string ResultString;
-	ResultString.resize(RequiredBufferSize);
-	RequiredBufferSize = WideCharToMultiByte(CP_UTF8, 0,
-		UnicodeToAnsiString.data(),
-		static_cast<int32_t>(UnicodeToAnsiString.size()),
-		ResultString.data(),
-		static_cast<int32_t>(ResultString.capacity()),
-		nullptr, nullptr);
-	return ResultString;
-}
-#pragma endregion
-
-inline token_t GenerateGlobalUniqueTokenId() { // Generates a global token in a thread safe manner, 
-											   // the implementation is free to change at any time
-	TRACE_FUNCTION_PROTO;
-
-	static std::mutex TokenGenLock;
-	std::lock_guard ScopedLock(TokenGenLock);
-	static token_t InitialToken = 0;
-	return ++InitialToken;
-}
-
-inline std::string FormatWin32ErrorMessage(
-	IN HRESULT Win32ErrorCode
-) {
-	TRACE_FUNCTION_PROTO;
-
-	return "FORMAT NOT IMPLEMENTED";
-}
+#ifndef SOFP_DONT_IMPLEMENT_BASE
+import sof.base;
+#endif

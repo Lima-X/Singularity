@@ -18,6 +18,25 @@
       <Platform>x64</Platform>
     </ProjectConfiguration>
   </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="amd64.disasm.ixx" />
+    <ClCompile Include="amd64.lift.ixx" />
+    <ClCompile Include="control.cli.ixx" />
+    <ClCompile Include="control.gui.ixx" />
+    <ClCompile Include="control.ixx" />
+    <ClCompile Include="control.tasks.ixx" />
+    <ClCompile Include="help.symbol.ixx" />
+    <ClCompile Include="image.edit.ixx" />
+    <ClCompile Include="image.load.ixx" />
+    <ClCompile Include="imgui.impl.ixx" />
+    <ClCompile Include="sof.base.ixx" />
+    <ClCompile Include="sof.llir.ixx" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\include\sof\odk.h" />
+    <ClInclude Include="..\include\sof\sdk.h" />
+    <ClInclude Include="..\include\sof\sof.h" />
+  </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>16.0</VCProjectVersion>
     <Keyword>Win32Proj</Keyword>
@@ -101,7 +120,7 @@
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpplatest</LanguageStandard>
       <LanguageStandard_C>stdc17</LanguageStandard_C>
-      <AdditionalIncludeDirectories>$(SolutionDir)xed\include;$(SolutionDir)fmt\include;$(SolutionDir)spdlog\include;$(SolutionDir)glfw\include;$(SolutionDir)imgui;$(VSInstallDir)DIA SDK\include</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)include;$(SolutionDir)xed\include;$(SolutionDir)fmt\include;$(SolutionDir)spdlog\include;$(SolutionDir)glfw\include;$(SolutionDir)imgui;$(VSInstallDir)DIA SDK\include</AdditionalIncludeDirectories>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
@@ -122,7 +141,7 @@
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpplatest</LanguageStandard>
       <LanguageStandard_C>stdc17</LanguageStandard_C>
-      <AdditionalIncludeDirectories>$(SolutionDir)xed\include;$(SolutionDir)fmt\include;$(SolutionDir)spdlog\include;$(SolutionDir)glfw\include;$(SolutionDir)imgui;$(VSInstallDir)DIA SDK\include</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)include;$(SolutionDir)xed\include;$(SolutionDir)fmt\include;$(SolutionDir)spdlog\include;$(SolutionDir)glfw\include;$(SolutionDir)imgui;$(VSInstallDir)DIA SDK\include</AdditionalIncludeDirectories>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
@@ -147,7 +166,7 @@
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpplatest</LanguageStandard>
       <LanguageStandard_C>stdc17</LanguageStandard_C>
-      <AdditionalIncludeDirectories>$(SolutionDir)xed\include;$(SolutionDir)fmt\include;$(SolutionDir)spdlog\include;$(SolutionDir)glfw\include;$(SolutionDir)imgui;$(VSInstallDir)DIA SDK\include</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)include;$(SolutionDir)xed\include;$(SolutionDir)fmt\include;$(SolutionDir)spdlog\include;$(SolutionDir)glfw\include;$(SolutionDir)imgui;$(VSInstallDir)DIA SDK\include</AdditionalIncludeDirectories>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
@@ -172,7 +191,7 @@
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpplatest</LanguageStandard>
       <LanguageStandard_C>stdc17</LanguageStandard_C>
-      <AdditionalIncludeDirectories>$(SolutionDir)xed\include;$(SolutionDir)fmt\include;$(SolutionDir)spdlog\include;$(SolutionDir)glfw\include;$(SolutionDir)imgui;$(VSInstallDir)DIA SDK\include</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)include;$(SolutionDir)xed\include;$(SolutionDir)fmt\include;$(SolutionDir)spdlog\include;$(SolutionDir)glfw\include;$(SolutionDir)imgui;$(VSInstallDir)DIA SDK\include</AdditionalIncludeDirectories>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
@@ -188,17 +207,6 @@
       <AdditionalOptions>/pdbaltpath:%_PDB% %(AdditionalOptions)</AdditionalOptions>
     </Link>
   </ItemDefinitionGroup>
-  <ItemGroup>
-    <ClCompile Include="Amd64Lift.ixx" />
-    <ClCompile Include="DisasmEngine.ixx" />
-    <ClCompile Include="ImguiImpl.ixx" />
-    <ClCompile Include="ImageHelp.ixx" />
-    <ClCompile Include="SymbolHelp.ixx" />
-    <ClCompile Include="VisualSoF.ixx" />
-  </ItemGroup>
-  <ItemGroup>
-    <ClInclude Include="VirtualizerBase.h" />
-  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>

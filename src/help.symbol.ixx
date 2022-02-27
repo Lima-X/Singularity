@@ -2,12 +2,12 @@
 // 
 module;
 
-#include "VirtualizerBase.h"
+#include "sof/sof.h"
 #include <dia2.h>
 #include <filesystem>
 
-export module SymbolHelp;
-import ImageHelp;
+export module sof.help.symbol;
+import sof.image.load;
 
 namespace filesystem = std::filesystem;
 
