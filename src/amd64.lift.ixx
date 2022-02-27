@@ -3,6 +3,7 @@ module;
 #include "sof/sof.h"
 
 export module sof.amd64.lift;
+import sof.llir;
 import sof.amd64.disasm;
 
 // Do you even lift bro?

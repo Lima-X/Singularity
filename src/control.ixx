@@ -56,8 +56,6 @@ export int32_t WinMain(
 	// Instantiate prerequisites such as loggers and external libraries
 	// ConsoleModifier ScopedConsole;
 	std::shared_ptr<spdlog::logger> VisualSingularityLogger;
-	GLFWwindow* PrimaryViewPort;
-	xed_state_t XedConfiguration;
 	try {
 		// Initialize and configure spdlog/fmt logger
 		spdlog::init_thread_pool(65536, 1);
@@ -70,66 +68,6 @@ export int32_t WinMain(
 		spdlog::set_level(spdlog::level::debug);
 #endif
 		SPDLOG_INFO("Initilialized singularity obfuscation framework logger");
-
-		// Initialize COM / OLE Components
-		auto ComResult = CoInitializeEx(NULL,
-			COINIT_MULTITHREADED);
-		if (FAILED(ComResult)) {
-
-			SPDLOG_ERROR("COM failed to initilialize with {}",
-				ComResult);
-			return STATUS_FAILED_INITILIZATION;
-		}
-		SPDLOG_INFO("Fully initialized COM/OLE");
-
-		// Initialize xed's tables and configure encoder, decoder
-		xed_tables_init();
-		xed_state_init2(&XedConfiguration,
-			XED_MACHINE_MODE_LONG_64,
-			XED_ADDRESS_WIDTH_64b);
-		SPDLOG_INFO("Initialized intelxed's decoder/encoder tables");
-
-		// Configure and initialize glfw and imgui
-		glfwSetErrorCallback(GlfwErrorHandlerCallback);
-		if (!glfwInit())
-			return STATUS_FAILED_INITILIZATION;
-		const char* glsl_version = "#version 130";
-		glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-		glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
-		SPDLOG_INFO("Initialized glfw opengl backend and installed callback");
-
-		// Create window with graphics context and enable v-sync
-		PrimaryViewPort = glfwCreateWindow(1280, 720, "VisualSingularitry : Bones", NULL, NULL);
-		if (!PrimaryViewPort)
-			return STATUS_FAILED_INITILIZATION;
-		glfwMakeContextCurrent(PrimaryViewPort);
-		glfwSwapInterval(1);
-		SPDLOG_INFO("Created glfw window context (vsync enabled)");
-
-		// Setup Dear ImGui context and style
-		IMGUI_CHECKVERSION();
-		ImGui::CreateContext();
-		ImGuiIO& ImguiIo = ImGui::GetIO(); (void)ImguiIo;
-		ImguiIo.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-		ImguiIo.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-		// ImguiIo.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
-		SPDLOG_INFO("Created and initialized Dear-ImGui context");
-		
-		// When viewports are enabled we tweak WindowRounding/WindowBg so platform windows can look identical to regular ones.
-		ImGuiStyle& ImguiStyle = ImGui::GetStyle();
-		ImGui::StyleColorsDark();
-		ImguiStyle.FrameBorderSize = 1;
-		if (ImguiIo.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
-			
-			ImguiStyle.WindowRounding = 0.0f;
-			ImguiStyle.Colors[ImGuiCol_WindowBg].w = 1.0f;
-		}
-		SPDLOG_INFO("Configured Dear-ImGui style options");
-
-		// Setup Platform/Renderer backends
-		ImGui_ImplGlfw_InitForOpenGL(PrimaryViewPort, true);
-		ImGui_ImplOpenGL3_Init(glsl_version);
-		SPDLOG_INFO("Initialized Dear-ImGui's glfw/opengl3 backend");
 	}
 	catch (const spdlog::spdlog_ex& ExceptionInformation) {
 
@@ -138,6 +76,68 @@ export int32_t WinMain(
 		return STATUS_FAILED_INITILIZATION;
 	}
 
+	// Initialize COM / OLE Components
+	auto ComResult = CoInitializeEx(NULL,
+		COINIT_MULTITHREADED);
+	if (FAILED(ComResult)) {
+
+		SPDLOG_ERROR("COM failed to initilialize with {}",
+			ComResult);
+		return STATUS_FAILED_INITILIZATION;
+	}
+	SPDLOG_INFO("Fully initialized COM/OLE");
+
+	// Initialize xed's tables and configure encoder, decoder
+	xed_state_t XedConfiguration;
+	xed_tables_init();
+	xed_state_init2(&XedConfiguration,
+		XED_MACHINE_MODE_LONG_64,
+		XED_ADDRESS_WIDTH_64b);
+	SPDLOG_INFO("Initialized intelxed's decoder/encoder tables");
+
+	// Configure and initialize glfw and imgui
+	glfwSetErrorCallback(GlfwErrorHandlerCallback);
+	if (!glfwInit())
+		return STATUS_FAILED_INITILIZATION;
+	const char* glsl_version = "#version 130";
+	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
+	SPDLOG_INFO("Initialized glfw opengl backend and installed callback");
+
+	// Create window with graphics context and enable v-sync
+	GLFWwindow* PrimaryViewPort = glfwCreateWindow(1280, 720,
+		"VisualSingularitry : Bones",
+		nullptr, nullptr);
+	if (!PrimaryViewPort)
+		return STATUS_FAILED_INITILIZATION;
+	glfwMakeContextCurrent(PrimaryViewPort);
+	glfwSwapInterval(1);
+	SPDLOG_INFO("Created glfw window context (vsync enabled)");
+
+	// Setup Dear ImGui context and style
+	IMGUI_CHECKVERSION();
+	ImGui::CreateContext();
+	ImGuiIO& ImguiIo = ImGui::GetIO(); (void)ImguiIo;
+	ImguiIo.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+	ImguiIo.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+	// ImguiIo.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+	SPDLOG_INFO("Created and initialized Dear-ImGui context");
+	
+	// When viewports are enabled we tweak WindowRounding/WindowBg so platform windows can look identical to regular ones.
+	ImGuiStyle& ImguiStyle = ImGui::GetStyle();
+	ImGui::StyleColorsDark();
+	ImguiStyle.FrameBorderSize = 1;
+	if (ImguiIo.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+		
+		ImguiStyle.WindowRounding = 0.0f;
+		ImguiStyle.Colors[ImGuiCol_WindowBg].w = 1.0f;
+	}
+	SPDLOG_INFO("Configured Dear-ImGui style options");
+
+	// Setup Platform/Renderer backends
+	ImGui_ImplGlfw_InitForOpenGL(PrimaryViewPort, true);
+	ImGui_ImplOpenGL3_Init(glsl_version);
+	SPDLOG_INFO("Initialized Dear-ImGui's glfw/opengl3 backend");
 
 	// These are the core components of the singularity backend to ui translation interface.
 	// They provide a simplified desynchronized interface for singularities api in the context
@@ -164,8 +164,6 @@ export int32_t WinMain(
 	// SPDLOG_WARN("A working with "ESC_RED"dangerous red text"ESC_RESET);
 	// SPDLOG_ERROR("Uhh a "ESC_BRIGHTRED"Error"ESC_RESET" occured!!");
 	// SPDLOG_CRITICAL("Well even worse now\n\n with even more errors...");
-
-
 
 	// Primary render loop, this takes care of all the drawing and user io, it takes full control of the backend
 	try {
@@ -496,18 +494,12 @@ export int32_t WinMain(
 						break;
 					}
 
-
 					ImGui::ProgressBar(GlobalProgress,
 						ImVec2(-FLT_MIN, 0),
 						GlobalProgressOverlay.c_str());
-					ImGui::SameLine();
-					ImGui::Text("GlobalProgress");
-
 					ImGui::ProgressBar(SubFrameProgress,
 						ImVec2(-FLT_MIN, 0),
 						SubFrameProgressOverlay.c_str());
-					ImGui::SameLine();
-					ImGui::Text("SubFrame");
 					ImGui::TextUnformatted(SelectionStateText);
 				}
 				ImGui::Separator();

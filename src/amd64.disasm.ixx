@@ -12,38 +12,44 @@ module;
 #include <vector>
 
 export module sof.amd64.disasm;
+import sof.llir;
 import sof.image.load;
 
-// Implements the cfg exception model used to report exceptions from this module
-export class CfgToolException
-	: public CommonExceptionType {
+
+// Statistics and issue tracker interface, overload operator() to implement your own captcha
+export class IDisassemblerTracker {
 public:
-	enum ExceptionCode {
-		STATUS_INDETERMINED_FUNCTION = -2000,
-		STATUS_CODE_LEAVING_FUNCTION,
-		STATUS_CFGNODE_WAS_TERMINATED,
-		STATUS_XED_NO_MEMORY_BAD_POINTER,
-		STATUS_XED_BAD_CALLBACKS_OR_MISSING,
-		STATUS_XED_UNSUPPORTED_ERROR,
-		STATUS_MISMATCHING_CFG_OBJECT,
-		STATUS_DFS_INVALID_SEARCH_CALL,
-		STATUS_OVERLAYING_CODE_DETECTED,
-		STATUS_NESTED_TRAVERSAL_DISALLOWED,
-		STATUS_UNSUPPORTED_RETURN_VALUE,
-		STATUS_SPLICING_FAILED_EMPTY_NODE,
-		STATUS_STRIPPING_FAILED_EMPTY_NODE
+	enum InformationUpdateType {
+		TRACKER_CFGNODE_COUNT,
+		TRACKER_OVERLAYING_COUNT,
+		TRACKER_INSTRUCTION_COUNT,
+		TRACKER_DECODE_ERRORS,
+		TRACKER_SPLICED_NODES,
+		TRACKER_STRIPPED_NODES,
+		TRACKER_HEURISTICS_TRIGGER,
+
+
+	};
+	enum UpdateInformation {
+		UPDATE_INCREMENT_COUNTER,
+		UPDATE_RESET_COUNTER
 	};
 
-	CfgToolException(
-		IN const std::string_view& ExceptionText,
-		IN       ExceptionCode     StatusCode
-	)
-		: CommonExceptionType(ExceptionText,
-			StatusCode,
-			CommonExceptionType::EXCEPTION_CFG_TOOLSET ) {
+	virtual void UpdateTrackerOrAbortCheck(
+		IN InformationUpdateType TrackerTpye
+	) {
+		TRACE_FUNCTION_PROTO;
+	}
+
+
+	virtual void operator()(                  // This function is called from the disassembler engine context, stacktraces can be taken
+		IN InformationUpdateType UpdateType,  // The specific counter or tracker entry the disassembler engine wants to modify
+		IN UpdateInformation     Operation    // How the caller wants to modify the counter, what it actually does is up to the implementor
+		) {
 		TRACE_FUNCTION_PROTO;
 	}
 };
+
 
 
 // The primary image disassembly engine, this is used to generate a workable,
@@ -70,8 +76,8 @@ public:
 	using FunctionAddress = FunctionAddress;
 
 	CfgGenerator(
-		IN const ImageHelp&   ImageMapping,
-		IN const xed_state_t& IntelXedState
+		IN const IImageLoaderHelp& ImageMapping,
+		IN const xed_state_t&      IntelXedState
 	)
 		: ImageMapping(ImageMapping),
 		  IntelXedState(IntelXedState) {
@@ -124,17 +130,17 @@ public:
 		// Check if the addresses passed are within the configured image
 		auto ImageMappingBegin = ImageMapping.GetImageFileMapping();
 		auto ImageMappingEnd = ImageMappingBegin +
-			ImageMapping.GetCoffMemberByTemplateId<ImageHelp::GET_OPTIONAL_HEADER>().SizeOfImage;
+			ImageMapping.GetImageOptionalHeader().SizeOfImage;
 		if (PossibleFunction.first < ImageMappingBegin ||
 			PossibleFunction.first +
 			PossibleFunction.second > ImageMappingEnd)
-			throw CfgToolException(
+			throw SingularityException(
 				fmt::format("Passed function [{}:{}], exceeds or is not within the configured module [{}:{}]",
 					static_cast<void*>(PossibleFunction.first),
 					PossibleFunction.second,
 					static_cast<void*>(ImageMappingBegin),
 					ImageMappingEnd - ImageMappingBegin),
-				CfgToolException::STATUS_INDETERMINED_FUNCTION);
+				SingularityException::STATUS_INDETERMINED_FUNCTION);
 		SPDLOG_DEBUG("Function to be analyzed at {}",
 			static_cast<void*>(PossibleFunction.first));
 
@@ -210,14 +216,14 @@ private:
 			// Handle xed decode errors and others or continue 
 			#define CFGEXCEPTION_FOR_XED_ERROR(ErrorType, StatusCode, ExceptionText, ...)\
 				case (ErrorType):\
-					throw CfgToolException(\
+					throw SingularityException(\
 						fmt::format(ExceptionText, __VA_ARGS__),\
 						(StatusCode))
 			switch (XedDecodeResult) {
 			case XED_ERROR_NONE:
 				break;
 			CFGEXCEPTION_FOR_XED_ERROR(XED_ERROR_BUFFER_TOO_SHORT,
-				CfgToolException::STATUS_CODE_LEAVING_FUNCTION,
+				SingularityException::STATUS_CODE_LEAVING_FUNCTION,
 				"Intel xed could not read full instruction at {}, possibly invalid function [{}:{}]",
 				static_cast<void*>(VirtualInstructionPointer),
 				static_cast<void*>(CfgTraversalStack.PredictedFunctionBounds.first),
@@ -249,20 +255,20 @@ private:
 
 			// These errors are theoretically impossible to reach
 			CFGEXCEPTION_FOR_XED_ERROR(XED_ERROR_NO_OUTPUT_POINTER,
-				CfgToolException::STATUS_XED_NO_MEMORY_BAD_POINTER,
+				SingularityException::STATUS_XED_NO_MEMORY_BAD_POINTER,
 				"The output parameter to the decoded instruction type for xed was null");
 			CFGEXCEPTION_FOR_XED_ERROR(XED_ERROR_NO_AGEN_CALL_BACK_REGISTERED,
-				CfgToolException::STATUS_XED_BAD_CALLBACKS_OR_MISSING,
+				SingularityException::STATUS_XED_BAD_CALLBACKS_OR_MISSING,
 				"One of both of xeds AGEN callbacks were missing during decode");
 			CFGEXCEPTION_FOR_XED_ERROR(XED_ERROR_CALLBACK_PROBLEM,
-				CfgToolException::STATUS_XED_BAD_CALLBACKS_OR_MISSING,
+				SingularityException::STATUS_XED_BAD_CALLBACKS_OR_MISSING,
 				"Xeds AGEN register or segment callback issued an error during decode");
 
 			default:
-				throw CfgToolException(
+				throw SingularityException(
 					fmt::format("Singularity's intelxed error handler encountered an unsupported xed error type {}",
 						XedDecodeResult),
-					CfgToolException::STATUS_XED_UNSUPPORTED_ERROR);
+					SingularityException::STATUS_XED_UNSUPPORTED_ERROR);
 			}
 			#undef CFGEXCEPTION_FOR_XED_ERROR
 
@@ -512,8 +518,8 @@ private:
 				// Execution continues here if overlaying assembly was found
 				CfgTraversalStack.DataTracker(IDisassemblerTracker::TRACKER_OVERLAYING_COUNT,
 					IDisassemblerTracker::UPDATE_INCREMENT_COUNTER);
-				throw CfgToolException("Overlaying assembly was found, not yet supported, fatal",
-					CfgToolException::STATUS_OVERLAYING_CODE_DETECTED);
+				throw SingularityException("Overlaying assembly was found, not yet supported, fatal",
+					SingularityException::STATUS_OVERLAYING_CODE_DETECTED);
 			}
 
 			// No node was found, the address we received is unknown, we can now reinvoke us and discover it
@@ -558,8 +564,8 @@ private:
 				// Overlaying code somehow, track and throw as exception
 				CfgTraversalStack.DataTracker(IDisassemblerTracker::TRACKER_OVERLAYING_COUNT,
 					IDisassemblerTracker::UPDATE_INCREMENT_COUNTER);
-				throw CfgToolException("An identical terminator address was matched but no matching overlay found",
-					CfgToolException::STATUS_OVERLAYING_CODE_DETECTED);
+				throw SingularityException("An identical terminator address was matched but no matching overlay found",
+					SingularityException::STATUS_OVERLAYING_CODE_DETECTED);
 			}
 
 			// Rebind nodes, first erase overlaying data then merge links
@@ -573,16 +579,16 @@ private:
 
 			// Security checks
 			if (CfgNodeForCurrentFrame.empty())
-				throw CfgToolException(
+				throw SingularityException(
 					fmt::format("Stripping of node {} cannot result in empty node",
 						static_cast<void*>(&CfgNodeForCurrentFrame)),
-					CfgToolException::STATUS_STRIPPING_FAILED_EMPTY_NODE);
+					SingularityException::STATUS_STRIPPING_FAILED_EMPTY_NODE);
 		}
 			
 		return OptionalCollidingNode;
 	}
 
 
-	const ImageHelp&  ImageMapping;
-	const xed_state_t IntelXedState;
+	const IImageLoaderHelp& ImageMapping;
+	const xed_state_t       IntelXedState;
 };

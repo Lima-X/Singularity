@@ -11,32 +11,6 @@ import sof.image.load;
 
 namespace filesystem = std::filesystem;
 
-#define MAKE_SYMHELP_HRESULT(Severity, StatusCode)\
-	(((Severity) << 31) | (1 << 29) | ((StatusCode & 0xffff)))
-export class SymbolException
-	: public CommonExceptionType {
-public:
-	enum ExceptionCodes : HRESULT {
-		EXCEPTION_CANNOT_BE_NON_STATIC = MAKE_SYMHELP_HRESULT(SEVERITY_ERROR, 1),
-		EXCEPTION_FAILED_TO_FETCH_TYPE = MAKE_SYMHELP_HRESULT(SEVERITY_ERROR, 2),
-		EXCEPTION_FAILED_RVA_FOR_SYMBOL = MAKE_SYMHELP_HRESULT(SEVERITY_ERROR, 3),
-
-
-
-		EXCEPTION_INVALID_EXCEPTION = MAKE_SYMHELP_HRESULT(SEVERITY_SUCCESS, 0)
-	};
-
-	SymbolException(
-		IN const std::string_view& ExceptionText,
-		IN       HRESULT           ComStatusCode
-	)
-		: CommonExceptionType(ExceptionText,
-			ComStatusCode,
-			CommonExceptionType::EXCEPTION_COMOLE_EXP) {
-		TRACE_FUNCTION_PROTO;
-	}
-
-};
 
 bool ForceCloseFileHandleThrowEnumeration() {
 	TRACE_FUNCTION_PROTO;
@@ -60,7 +34,7 @@ public:
 			nullptr,
 			CLSCTX_INPROC_SERVER);
 		if (FAILED(ComResult))
-			throw SymbolException(
+			throw SingularityException(
 				fmt::format("Failed to create DIASOURCE instance with " ESC_BRIGHTRED"{}" ESC_RESET
 					" : \"" ESC_BRIGHTRED"{}\"",
 					ComResult,
@@ -105,7 +79,7 @@ public:
 					"resulting in the file being effectively locked up till the end of this software.\n"
 					"Restarting the application may be advised if it refuses to reload any file.",
 					PdbExeFileName.string().c_str());
-				throw SymbolException("symbol FAILED to load, check previous for more data",
+				throw SingularityException("symbol FAILED to load, check previous for more data",
 					ComResult);
 
 			default:
@@ -286,18 +260,18 @@ public:
 			ulong_t LocationType;
 			ComResult = Symbol->get_locationType(&LocationType);
 			if (ComResult != S_OK)
-				throw SymbolException("Failed to fetch location type",
-					SymbolException::EXCEPTION_FAILED_TO_FETCH_TYPE);
+				throw SingularityException("Failed to fetch location type",
+					SingularityException::EXCEPTION_FAILED_TO_FETCH_TYPE);
 			if (LocationType != LocIsStatic)
-				throw SymbolException("Location cannot be outside of static",
-					SymbolException::EXCEPTION_CANNOT_BE_NON_STATIC);
+				throw SingularityException("Location cannot be outside of static",
+					SingularityException::EXCEPTION_CANNOT_BE_NON_STATIC);
 
 			byte_t* VirtualAddress = nullptr;
 			ComResult = Symbol->get_relativeVirtualAddress(
 				reinterpret_cast<ulong_t*>(&VirtualAddress));
 			if (ComResult != S_OK)
-				throw SymbolException("Failed to get rva in module for symbol",
-					SymbolException::EXCEPTION_FAILED_RVA_FOR_SYMBOL);
+				throw SingularityException("Failed to get rva in module for symbol",
+					SingularityException::EXCEPTION_FAILED_RVA_FOR_SYMBOL);
 
 			uintptr_t ImageBase;
 			DiaSession->get_loadAddress(&ImageBase);

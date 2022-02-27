@@ -3,6 +3,7 @@
 module;
 
 #include "sof/sof.h"
+#include <glfw/glfw3.h>
 #include <imgui.h>
 #include <shlobj_core.h>
 #include <spdlog/sinks/base_sink.h>
@@ -15,11 +16,10 @@ module;
 
 export module sof.control.gui;
 
-import ImageHelp;
-import SymbolHelp;
-import DisassemblerEngine;
+import sof.image.load;
+import sof.amd64.disasm;
 
-import sof.control.tasks;
+// import sof.control.tasks;
 
 
 using namespace std::literals::chrono_literals;
@@ -155,191 +155,6 @@ export std::string ComOpenFileDialogWithConfig(
 	return SelectedFileName2;
 }
 #pragma endregion
-
-
-
-
-export class VisualTrackerApp
-	: public IImageLoaderTracker,
-	  public IDisassemblerTracker {
-public:
-	VisualTrackerApp(
-		IN const VisualSingularityApp& ControllerApp
-	)
-		: ApplicationController(ControllerApp) {
-		TRACE_FUNCTION_PROTO;
-	}
-
-
-	void DoCommonAbortChecksAndDispatch() {
-
-	}
-	void DoWaitTimeInterval() {
-		TRACE_FUNCTION_PROTO;
-
-		// A thread safe and automatically cleaning up timer raiser, based on raii and static initialization
-		static class PeriodBeginHighResolutionClock {
-		public:
-			PeriodBeginHighResolutionClock() {
-				TRACE_FUNCTION_PROTO;
-
-				// Get system timer resolution bounds and try to raise the clock
-				auto Status = timeGetDevCaps(&TimerCaps,
-					sizeof(TimerCaps));
-				switch (Status) {
-				case MMSYSERR_ERROR:
-				case TIMERR_NOCANDO:
-					SPDLOG_WARN("Failed to query system resolution bounds, assume 2000hz - 64hz");
-					TimerCaps.wPeriodMax = 15;
-					TimerCaps.wPeriodMin = 1;
-					break;
-				}
-			}
-			~PeriodBeginHighResolutionClock() {
-				TRACE_FUNCTION_PROTO;
-
-				if (RaisedSystemClock) {
-
-					auto Status = timeEndPeriod(TimerCaps.wPeriodMin);
-					if (Status == TIMERR_NOCANDO)
-						SPDLOG_ERROR("Failed to lower clock manually");
-				}
-			}
-
-			void RaiseSystemTimerResolutionOnce() {
-				TRACE_FUNCTION_PROTO;
-
-				if (RaisedSystemClock)
-					return;
-				auto Status = timeBeginPeriod(TimerCaps.wPeriodMin);
-				if (Status == TIMERR_NOCANDO)
-					SPDLOG_ERROR("Failed to raise systemclock, assuming {}ms",
-						TimerCaps.wPeriodMin);
-				RaisedSystemClock = true;
-			}
-
-			const TIMECAPS& GetTimeCaps() const {
-				TRACE_FUNCTION_PROTO; return TimerCaps;
-			}
-
-		private:
-			TIMECAPS TimerCaps{};
-			bool     RaisedSystemClock = false;
-
-		} ClockLift;
-
-		// If the sleep interval is not big enough we just spinlock the cpu,
-		// this is the reason the virtual slow down function should not be used
-		// this is simply just there to exist and allow something that is 
-		// impractical anyways, just useful to more closely examine the process
-		for (auto TimeBegin = chrono::steady_clock::now(),
-			TimeNow = chrono::steady_clock::now();
-			chrono::duration_cast<chrono::microseconds>(TimeNow - TimeBegin)
-				<= chrono::microseconds(VirtualSleepSliderInUs);
-			TimeNow = chrono::steady_clock::now()) {
-
-			// In the rapid loop we additionally check if we can physically sleep
-			if (chrono::milliseconds(VirtualSleepSliderInUs / 1000) >=
-				chrono::milliseconds(ClockLift.GetTimeCaps().wPeriodMin)) {
-
-				// The wait time is big enough to physically sleep
-				ClockLift.RaiseSystemTimerResolutionOnce();
-				SleepEx(1, false);
-			}
-		}
-
-		while (PauseSeriveExecution)
-			SleepEx(1, false);
-	}
-
-	virtual void SetReadSectionCountOfView(
-		uint32_t NumberOfSections
-	) {
-		TRACE_FUNCTION_PROTO; 
-		NumberOfSectionsInImage = NumberOfSections;
-	}
-
-
-	void SetAddressOfInterest(
-		IN byte_t* VirtualAddress,
-		IN size_t  VirtualSize
-	) override {
-		TRACE_FUNCTION_PROTO;
-		CurrentAddressOfInterest = VirtualAddress;
-		VirtualSizeOfInterets = VirtualSize;
-	}
-
-	void UpdateTrackerOrAbortCheck(
-		IN IImageLoaderTracker::TrackerInfoTag TrackerType
-	) override {
-		TRACE_FUNCTION_PROTO;
-
-		switch (TrackerType) {
-		case  IImageLoaderTracker::TRACKER_UPDATE_SECTIONS:
-			++NumberOfSectionsLoaded;
-			break;
-		case IImageLoaderTracker::TRACKER_UPDATE_RELOCS:
-			++RelocsApplied;
-			break;
-		}
-
-		DoCommonAbortChecksAndDispatch();
-		DoWaitTimeInterval();
-	}
-
-	void UpdateTrackerOrAbortCheck(
-		IN IDisassemblerTracker::InformationUpdateType TrackerType
-	) override {
-		TRACE_FUNCTION_PROTO;
-
-		//switch (TrackerType) {
-		//
-		//default:
-		//}
-
-		DoCommonAbortChecksAndDispatch();
-		DoWaitTimeInterval();
-	}
-
-	void ResetData() {
-		TRACE_FUNCTION_PROTO;
-
-		CurrentAddressOfInterest = 0;
-		VirtualSizeOfInterets = 0;
-		RelocsApplied = 0;
-		NumberOfSectionsInImage = 0;
-		NumberOfSectionsLoaded = 0;
-		NumberOfFramesProcessed = 0;
-		TotalNumberOfFrames = 0;
-		NumberOfAllocatedCfgNodes = 0;
-		NumebrOfInstructionsDecoded = 0;
-	}
-
-	std::atomic<byte_t*> CurrentAddressOfInterest = nullptr;
-	std::atomic_size_t   VirtualSizeOfInterets = 0;
-
-	// Load Statistics
-	std::atomic_uint32_t RelocsApplied = 0;
-	std::atomic_uint32_t NumberOfSectionsInImage = 0;
-	std::atomic_uint32_t NumberOfSectionsLoaded = 0;
-
-	// SOB pass statistics
-	std::atomic_uint32_t NumberOfFramesProcessed = 0;
-	std::atomic_uint32_t TotalNumberOfFrames = 0;
-	std::atomic_uint32_t NumberOfAllocatedCfgNodes = 0;
-	std::atomic_uint32_t NumebrOfInstructionsDecoded = 0;
-
-
-	// Utility for thrashing
-	std::atomic_bool     PauseSeriveExecution = false;
-	std::atomic_uint32_t VirtualSleepSliderInUs;
-
-private:
-	const VisualSingularityApp& ApplicationController;
-};
-#pragma endregion
-
-
 
 export void HelpMarker(
 	IN const char* Description
@@ -750,7 +565,5 @@ private:
 	decltype(ImGuiTextFilter::InputBuf)
 		PreviousFilterText{};
 };
-
-
-
+#pragma endregion
 

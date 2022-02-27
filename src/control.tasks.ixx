@@ -5,40 +5,22 @@ module;
 export module sof.control.tasks;
 import sof.control.gui; // quick hack to get the the IOpenFileDialog object
 
+import sof.llir;
+import sof.image.load;
+import sof.image.edit;
+import sof.amd64.disasm;
+import sof.amd64.lift;
+import sof.help.symbol;
 
 // Special public name for the image loader and image editor (etc.) tool
 export using ImageHelp = ImageLoader<ImageEditor>;
 
-
-#pragma region Visual mode utilities
-// A basic exception wrapper for dispatching gui / controller related exceptions
-export class VisualAppException
-	: public CommonExceptionType {
-public:
-	enum ExceptionCode : UnderlyingType {
-		STATUS_FAILED_QUEUE_WORKITEM = -2000,
-		STATUS_CANNOT_FREE_IN_PROGRESS,
-		STATUS_FREED_UNREGISTERED_OBJ,
-		STATUS_ABORTED_OBJECT_IN_CALL,
-	};
-
-	VisualAppException(
-		IN const std::string_view& ExceptionText,
-		IN       ExceptionCode     StatusCode
-	)
-		: CommonExceptionType(ExceptionText,
-			StatusCode,
-			CommonExceptionType::EXCEPTION_VISUAL_APP) {
-		TRACE_FUNCTION_PROTO;
-	}
-};
-
 // This defines a base interface type that every async queue object must inherit from
 export class IVisualWorkObject {
-	struct ThrowAbortTag : public VisualAppException {
+	struct ThrowAbortTag : public SingularityException {
 		ThrowAbortTag()
-			: VisualAppException("Aborted object on call by user dispatch",
-				VisualAppException::STATUS_ABORTED_OBJECT_IN_CALL) {
+			: SingularityException("Aborted object on call by user dispatch",
+				SingularityException::STATUS_ABORTED_OBJECT_IN_CALL) {
 			TRACE_FUNCTION_PROTO;
 		}
 	};
@@ -46,7 +28,15 @@ export class IVisualWorkObject {
 
 public:
 	IVisualWorkObject() = default;
-	virtual ~IVisualWorkObject() = 0;
+
+
+	// Another msvc bug, pure virtual destructors dont work when being exported from modules
+	// https://developercommunity.visualstudio.com/t/c-20-module-problem-on-pure-virtual-and-abstract-k/1441612
+	// no real workaround is available, so instead of abstarct it will just be virtual ig
+	// virtual ~IVisualWorkObject() = 0;
+	virtual ~IVisualWorkObject() {
+		TRACE_FUNCTION_PROTO;
+	}
 	IVisualWorkObject(IN const IVisualWorkObject&) = delete;
 	IVisualWorkObject& operator=(IN const IVisualWorkObject&) = delete;
 
@@ -77,13 +67,9 @@ public:
 			throw ThrowAbortTag();
 	}
 };
-IVisualWorkObject::~IVisualWorkObject() {
-	TRACE_FUNCTION_PROTO;
-}
-#pragma endregion
-
-
-
+// IVisualWorkObject::~IVisualWorkObject() {
+// 	TRACE_FUNCTION_PROTO;
+// }
 
 #pragma region VisualSingularity task objects
 export class VisualOpenFileObject
@@ -358,7 +344,7 @@ public:
 
 				++FramesProcessed;
 			}
-			catch (const CfgToolException& GraphException) {
+			catch (const SingularityException& GraphException) {
 
 				SPDLOG_ERROR("Graph generation failed failed with [{}] : \"{}\", skipping frame",
 					GraphException.StatusCode,
@@ -485,19 +471,19 @@ public:
 						auto WorkState = WorkItem.WorkingObject->GetWorkObjectState();	
 						if (WorkState >= IVisualWorkObject::STATE_CALL_SCHEDULED &&
 							WorkState < IVisualWorkObject::STATE_CALL_FINISHED)
-							throw VisualAppException(
+							throw SingularityException(
 								fmt::format("Tried to free in progress object " ESC_BRIGHTRED"{}",
 									static_cast<const void*>(WorkItemEntry)),
-								VisualAppException::STATUS_CANNOT_FREE_IN_PROGRESS);
+								SingularityException::STATUS_CANNOT_FREE_IN_PROGRESS);
 						return true;
 					}
 					return false;
 			});
 		if (DequeEntry == WorkResponseList.end())
-			throw VisualAppException(
+			throw SingularityException(
 				fmt::format("Tried to free unregistered object " ESC_BRIGHTRED"{}",
 					static_cast<const void*>(WorkItemEntry)),
-				VisualAppException::STATUS_FREED_UNREGISTERED_OBJ);
+				SingularityException::STATUS_FREED_UNREGISTERED_OBJ);
 		WorkResponseList.erase(DequeEntry);
 		SPDLOG_INFO("Freed workitem " ESC_BRIGHTRED"{}" ESC_RESET" from working pool",
 			static_cast<const void*>(WorkItemEntry));
@@ -518,10 +504,10 @@ private:
 		if (!Status) {
 
 			WorkResponseList.pop_back();
-			throw VisualAppException(
+			throw SingularityException(
 				fmt::format("Failed to enlist " ESC_BRIGHTRED"{}" ESC_RESET" workitem on the threadpool work queue",
 					static_cast<void*>(WorkItem)),
-				VisualAppException::STATUS_FAILED_QUEUE_WORKITEM);
+				SingularityException::STATUS_FAILED_QUEUE_WORKITEM);
 		}
 	}
 
@@ -572,6 +558,184 @@ private:
 	std::deque<QueueWorkItem>   WorkResponseList;
 	std::mutex                  ThreadPoolLock;
 	TP_CALLBACK_ENVIRON         ThreadPoolEnvironment{};
-
 };
 #pragma endregion
+
+export class VisualTrackerApp
+	: public IImageLoaderTracker,
+	public IDisassemblerTracker {
+public:
+	VisualTrackerApp(
+		IN const VisualSingularityApp& ControllerApp
+	)
+		: ApplicationController(ControllerApp) {
+		TRACE_FUNCTION_PROTO;
+	}
+
+
+	void DoCommonAbortChecksAndDispatch() {
+
+	}
+	void DoWaitTimeInterval() {
+		TRACE_FUNCTION_PROTO;
+
+		// A thread safe and automatically cleaning up timer raiser, based on raii and static initialization
+		static class PeriodBeginHighResolutionClock {
+		public:
+			PeriodBeginHighResolutionClock() {
+				TRACE_FUNCTION_PROTO;
+
+				// Get system timer resolution bounds and try to raise the clock
+				auto Status = timeGetDevCaps(&TimerCaps,
+					sizeof(TimerCaps));
+				switch (Status) {
+				case MMSYSERR_ERROR:
+				case TIMERR_NOCANDO:
+					SPDLOG_WARN("Failed to query system resolution bounds, assume 2000hz - 64hz");
+					TimerCaps.wPeriodMax = 15;
+					TimerCaps.wPeriodMin = 1;
+					break;
+				}
+			}
+			~PeriodBeginHighResolutionClock() {
+				TRACE_FUNCTION_PROTO;
+
+				if (RaisedSystemClock) {
+
+					auto Status = timeEndPeriod(TimerCaps.wPeriodMin);
+					if (Status == TIMERR_NOCANDO)
+						SPDLOG_ERROR("Failed to lower clock manually");
+				}
+			}
+
+			void RaiseSystemTimerResolutionOnce() {
+				TRACE_FUNCTION_PROTO;
+
+				if (RaisedSystemClock)
+					return;
+				auto Status = timeBeginPeriod(TimerCaps.wPeriodMin);
+				if (Status == TIMERR_NOCANDO)
+					SPDLOG_ERROR("Failed to raise systemclock, assuming {}ms",
+						TimerCaps.wPeriodMin);
+				RaisedSystemClock = true;
+			}
+
+			const TIMECAPS& GetTimeCaps() const {
+				TRACE_FUNCTION_PROTO; return TimerCaps;
+			}
+
+		private:
+			TIMECAPS TimerCaps{};
+			bool     RaisedSystemClock = false;
+
+		} ClockLift;
+
+		// If the sleep interval is not big enough we just spinlock the cpu,
+		// this is the reason the virtual slow down function should not be used
+		// this is simply just there to exist and allow something that is 
+		// impractical anyways, just useful to more closely examine the process
+		for (auto TimeBegin = chrono::steady_clock::now(),
+			TimeNow = chrono::steady_clock::now();
+			chrono::duration_cast<chrono::microseconds>(TimeNow - TimeBegin)
+			<= chrono::microseconds(VirtualSleepSliderInUs);
+			TimeNow = chrono::steady_clock::now()) {
+
+			// In the rapid loop we additionally check if we can physically sleep
+			if (chrono::milliseconds(VirtualSleepSliderInUs / 1000) >=
+				chrono::milliseconds(ClockLift.GetTimeCaps().wPeriodMin)) {
+
+				// The wait time is big enough to physically sleep
+				ClockLift.RaiseSystemTimerResolutionOnce();
+				SleepEx(1, false);
+			}
+		}
+
+		while (PauseSeriveExecution)
+			SleepEx(1, false);
+	}
+
+	virtual void SetReadSectionCountOfView(
+		uint32_t NumberOfSections
+	) {
+		TRACE_FUNCTION_PROTO;
+		NumberOfSectionsInImage = NumberOfSections;
+	}
+
+
+	void SetAddressOfInterest(
+		IN byte_t* VirtualAddress,
+		IN size_t  VirtualSize
+	) override {
+		TRACE_FUNCTION_PROTO;
+		CurrentAddressOfInterest = VirtualAddress;
+		VirtualSizeOfInterets = VirtualSize;
+	}
+
+	void UpdateTrackerOrAbortCheck(
+		IN IImageLoaderTracker::TrackerInfoTag TrackerType
+	) override {
+		TRACE_FUNCTION_PROTO;
+
+		switch (TrackerType) {
+		case  IImageLoaderTracker::TRACKER_UPDATE_SECTIONS:
+			++NumberOfSectionsLoaded;
+			break;
+		case IImageLoaderTracker::TRACKER_UPDATE_RELOCS:
+			++RelocsApplied;
+			break;
+		}
+
+		DoCommonAbortChecksAndDispatch();
+		DoWaitTimeInterval();
+	}
+
+	void UpdateTrackerOrAbortCheck(
+		IN IDisassemblerTracker::InformationUpdateType TrackerType
+	) override {
+		TRACE_FUNCTION_PROTO;
+
+		//switch (TrackerType) {
+		//
+		//default:
+		//}
+
+		DoCommonAbortChecksAndDispatch();
+		DoWaitTimeInterval();
+	}
+
+	void ResetData() {
+		TRACE_FUNCTION_PROTO;
+
+		CurrentAddressOfInterest = 0;
+		VirtualSizeOfInterets = 0;
+		RelocsApplied = 0;
+		NumberOfSectionsInImage = 0;
+		NumberOfSectionsLoaded = 0;
+		NumberOfFramesProcessed = 0;
+		TotalNumberOfFrames = 0;
+		NumberOfAllocatedCfgNodes = 0;
+		NumebrOfInstructionsDecoded = 0;
+	}
+
+	std::atomic<byte_t*> CurrentAddressOfInterest = nullptr;
+	std::atomic_size_t   VirtualSizeOfInterets = 0;
+
+	// Load Statistics
+	std::atomic_uint32_t RelocsApplied = 0;
+	std::atomic_uint32_t NumberOfSectionsInImage = 0;
+	std::atomic_uint32_t NumberOfSectionsLoaded = 0;
+
+	// SOB pass statistics
+	std::atomic_uint32_t NumberOfFramesProcessed = 0;
+	std::atomic_uint32_t TotalNumberOfFrames = 0;
+	std::atomic_uint32_t NumberOfAllocatedCfgNodes = 0;
+	std::atomic_uint32_t NumebrOfInstructionsDecoded = 0;
+
+
+	// Utility for thrashing
+	std::atomic_bool     PauseSeriveExecution = false;
+	std::atomic_uint32_t VirtualSleepSliderInUs;
+
+private:
+	const VisualSingularityApp& ApplicationController;
+};

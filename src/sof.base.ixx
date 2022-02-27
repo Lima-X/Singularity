@@ -10,8 +10,6 @@ module;
 #include <string>
 #include <unordered_map>
 
-#undef FACILITY_CONTROL
-
 export module sof.base;
 
 
@@ -30,6 +28,9 @@ export using byte_t = uint8_t;        // Type used to store arbitrary data in th
 export using rva_t = long_t;          // Type used to describe a 31bit image relative offset, anything negative is invalid
 export using disp_t = long_t;         // Type used to represent a 32bit displacement
 export using token_t = size_t;        // Type used for tokenized ids, each token is unique to in the process lifetime
+
+export using FunctionAddress = std::pair<byte_t*, size_t>;
+export using func_addr_t = std::pair<byte_t*, disp_t>;
 #pragma endregion
 
 
@@ -140,8 +141,8 @@ public:
 		TRACE_FUNCTION_PROTO;
 
 		static const std::unordered_map<int32_t, const char*> ExceptionTranslationTabel{
-			{ STATUS_EXCEPTION_NO_ERROR , "STATUS_EXCEPTION_NO_ERROR " },
-			{ STATUS_INDETERMINED_FUNCTION , "STATUS_INDETERMINED_FUNCTION " },
+			{ STATUS_EXCEPTION_NO_ERROR , "STATUS_EXCEPTION_NO_ERROR" },
+			{ STATUS_INDETERMINED_FUNCTION , "STATUS_INDETERMINED_FUNCTION" },
 			{ STATUS_CODE_LEAVING_FUNCTION, "STATUS_CODE_LEAVING_FUNCTION" },
 			{ STATUS_CFGNODE_WAS_TERMINATED, "STATUS_CFGNODE_WAS_TERMINATED" },
 			{ STATUS_XED_NO_MEMORY_BAD_POINTER, "STATUS_XED_NO_MEMORY_BAD_POINTER" },
@@ -161,7 +162,7 @@ public:
 			{ EXCEPTION_CANNOT_BE_NON_STATIC , "EXCEPTION_CANNOT_BE_NON_STATIC " },
 			{ EXCEPTION_FAILED_TO_FETCH_TYPE, "EXCEPTION_FAILED_TO_FETCH_TYPE" },
 			{ EXCEPTION_FAILED_RVA_FOR_SYMBOL, "EXCEPTION_FAILED_RVA_FOR_SYMBOL" },
-			{ STATUS_FAILED_TO_OPEN_FILE , "STATUS_FAILED_TO_OPEN_FILE " },
+			{ STATUS_FAILED_TO_OPEN_FILE , "STATUS_FAILED_TO_OPEN_FILE" },
 			{ STATUS_FAILED_TO_CLOSE_FILE, "STATUS_FAILED_TO_CLOSE_FILE" },
 			{ STATUS_FAILED_FILE_POINTER, "STATUS_FAILED_FILE_POINTER" },
 			{ STATUS_FAILED_IO_OPERATION, "STATUS_FAILED_IO_OPERATION" },

@@ -7,6 +7,8 @@ module;
 #include <vector>
 
 export module sof.llir;
+import sof.image.load;
+
 
 // The projects core component, this is the intermediate representation format the engine translates code into.
 // This representation can be used to transform and modify, adding and removing inclusive, the code loaded.
@@ -25,18 +27,17 @@ public:
 			FlagsType ContainsIncompletePaths : 1; // Set to indicate that a node contained was not fully resolved
 
 			// Internal BFlags
-			FlagsType ReservedCfgFlags : 6; // Reserved flags (for completions sake)
+			FlagsType ReservedCfgFlags     : 6; // Reserved flags (for completions sake)
 			FlagsType TreeIsBeingTraversed : 1; // Indicates that the graph is currently being traversed, 
-												   // this flag is used to check for invocation of another traversal, 
-												   // as due to the locking system nested traversals aren't possible.
+												// this flag is used to check for invocation of another traversal, 
+												// as due to the locking system nested traversals aren't possible.
 		};
 	};
 
 	struct CfgEntry {
 		xed_decoded_inst_t DecodedInstruction;
-		byte_t* OriginalAddress;
+		byte_t*            OriginalAddress;
 		byte_t             InstructionText[15];
-
 	};
 
 	class CfgNode :
@@ -44,7 +45,7 @@ public:
 		friend ControlFlowGraph;
 		friend class CfgGenerator;
 	public:
-		using UnderlyingType = std::vector<CfgEntry>;
+		using type_t = std::vector<CfgEntry>;
 
 		union NodeFlagsUnion {
 			using FlagsType = uint8_t;
@@ -53,7 +54,7 @@ public:
 			struct {
 				FlagsType NodeTerminatesPath : 1; // Set if the node terminates the current branch of the path,
 												  // a path may have more than a single terminating node.
-				FlagsType NodeIsIncomplete : 1; // Defines that this node terminates in an undesirable way,
+				FlagsType NodeIsIncomplete   : 1; // Defines that this node terminates in an undesirable way,
 												  // the CFG will also have its incomplete path flag set.
 												  // A cfg containing a node with this flag will likely not be
 												  // analyzed and processed fully and therefore get removed
@@ -65,7 +66,7 @@ public:
 		};
 
 
-		UnderlyingType::value_type& AllocateCfgNodeEntry() {
+		type_t::value_type& AllocateCfgNodeEntry() {
 			TRACE_FUNCTION_PROTO;
 #if 0
 			// Check if node as been terminated, if so throw exception similar to bad alloc but emulated
@@ -88,11 +89,11 @@ public:
 
 			// Check if remote node is part of the same control flow graph allocation
 			if (ReferencingCfgNode.NodeHolder != NodeHolder)
-				throw CfgToolException(
+				throw SingularityException(
 					fmt::format("Could not link in rmeote node, remote is not part of the same cfg [{}:{}]",
 						static_cast<void*>(ReferencingCfgNode.NodeHolder),
 						static_cast<void*>(NodeHolder)),
-					CfgToolException::STATUS_MISMATCHING_CFG_OBJECT);
+					SingularityException::STATUS_MISMATCHING_CFG_OBJECT);
 
 			ReferencingCfgNode.InputFlowNodeLinks.push_back(this);
 		}
@@ -137,11 +138,11 @@ public:
 
 			// Security checks, verify nodes contain data
 			if (SplicedNodeHead->empty() || this->empty())
-				throw CfgToolException(
+				throw SingularityException(
 					fmt::format("Splicing of node {} into {}, cannot result in empty node",
 						static_cast<void*>(this),
 						static_cast<void*>(SplicedNodeHead)),
-					CfgToolException::STATUS_SPLICING_FAILED_EMPTY_NODE);
+					SingularityException::STATUS_SPLICING_FAILED_EMPTY_NODE);
 
 			return true;
 		}
@@ -197,7 +198,7 @@ public:
 		}
 
 		std::span<CfgEntry> GetCfgDecodeDataList() {
-			TRACE_FUNCTION_PROTO; return(*static_cast<UnderlyingType*>(this)); // inheritance is kinda evil i guess
+			TRACE_FUNCTION_PROTO; return(*static_cast<type_t*>(this)); // inheritance is kinda evil i guess
 		}
 		NodeFlagsUnion GetCFlagsForNode() {
 			TRACE_FUNCTION_PROTO; return CFlags;
@@ -321,8 +322,8 @@ public:
 		// this was done in order to aid with performance as a bit stack would allow nested traversal,
 		// but would require a repaint before or after each search, in order to keep track of visited nodes.
 		if (BFlags.TreeIsBeingTraversed)
-			throw CfgToolException("Cannot traverse graph within a traversal process, nested traversal is not supported",
-				CfgToolException::STATUS_NESTED_TRAVERSAL_DISALLOWED);
+			throw SingularityException("Cannot traverse graph within a traversal process, nested traversal is not supported",
+				SingularityException::STATUS_NESTED_TRAVERSAL_DISALLOWED);
 		BFlags.TreeIsBeingTraversed = true;
 
 		// Search driver: call into recursive function and start the actual search, then handle errors,
@@ -342,8 +343,8 @@ public:
 			return TraversalStack.ReturnTargetValue;
 		case STATUS_NULLPOINTER_CALL:
 		case STATUS_ALREADY_EXPLORED:
-			throw CfgToolException("DFS cannot return null pointer call or already explored node, to the driver",
-				CfgToolException::STATUS_DFS_INVALID_SEARCH_CALL);
+			throw SingularityException("DFS cannot return null pointer call or already explored node, to the driver",
+				SingularityException::STATUS_DFS_INVALID_SEARCH_CALL);
 		default:
 			throw std::logic_error("DFS cannot return unsupported search result");
 		}
@@ -395,7 +396,7 @@ private:
 		IN const FunctionAddress&  FunctionLimits
 	)
 		: OwningImageMapping(ImageMapping),
-		FunctionLimits(FunctionLimits) {
+		  FunctionLimits(FunctionLimits) {
 		TRACE_FUNCTION_PROTO;
 	}
 
@@ -403,9 +404,9 @@ private:
 	struct RecursiveTraversalState {
 		IN  const TreeTraversalMode             SelectedTraversalMode;
 		IN  const uint32_t                      SearchBindTag;
-		IN  CfgNode* NextCfgNode;
+		IN        CfgNode*                      NextCfgNode;
 		IN  std::function<NodeModifierCallback> CfgCallback;
-		OUT CfgNode* ReturnTargetValue;
+		OUT CfgNode*                            ReturnTargetValue;
 	};
 	enum RecursiveDescentStatus {
 		STATUS_RECURSIVE_OK = 0,
@@ -472,40 +473,4 @@ private:
 	CfgNode* InitialControlFlowGraphHead = nullptr;
 	CfgFlagsUnion BFlags{};
 	uint32_t      RTLDFInitialSearchTagValue{};
-};
-
-
-
-// Statistics and issue tracker interface, overload operator() to implement your own captcha
-export class IDisassemblerTracker {
-public:
-	enum InformationUpdateType {
-		TRACKER_CFGNODE_COUNT,
-		TRACKER_OVERLAYING_COUNT,
-		TRACKER_INSTRUCTION_COUNT,
-		TRACKER_DECODE_ERRORS,
-		TRACKER_SPLICED_NODES,
-		TRACKER_STRIPPED_NODES,
-		TRACKER_HEURISTICS_TRIGGER,
-
-
-	};
-	enum UpdateInformation {
-		UPDATE_INCREMENT_COUNTER,
-		UPDATE_RESET_COUNTER
-	};
-
-	virtual void UpdateTrackerOrAbortCheck(
-		IN InformationUpdateType TrackerTpye
-	) {
-		TRACE_FUNCTION_PROTO;
-	}
-
-
-	virtual void operator()(                  // This function is called from the disassembler engine context, stacktraces can be taken
-		IN InformationUpdateType UpdateType,  // The specific counter or tracker entry the disassembler engine wants to modify
-		IN UpdateInformation     Operation    // How the caller wants to modify the counter, what it actually does is up to the implementor
-		) {
-		TRACE_FUNCTION_PROTO;
-	}
 };

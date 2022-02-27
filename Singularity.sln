@@ -3,22 +3,19 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.32014.148
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SOF", "src\sof.vcxproj", "{F7558596-6580-43F5-A8C1-BEF58E7412DF}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "sof", "src\sof.vcxproj", "{F7558596-6580-43F5-A8C1-BEF58E7412DF}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		DbgSingularity|x64 = DbgSingularity|x64
-		dLibSingularity|x64 = dLibSingularity|x64
-		sLibSingularity|x64 = sLibSingularity|x64
+		LibSingularity|x64 = LibSingularity|x64
 		VisualSingularity|x64 = VisualSingularity|x64
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
 		{F7558596-6580-43F5-A8C1-BEF58E7412DF}.DbgSingularity|x64.ActiveCfg = DbgSingularity|x64
 		{F7558596-6580-43F5-A8C1-BEF58E7412DF}.DbgSingularity|x64.Build.0 = DbgSingularity|x64
-		{F7558596-6580-43F5-A8C1-BEF58E7412DF}.dLibSingularity|x64.ActiveCfg = dLibSingularity|x64
-		{F7558596-6580-43F5-A8C1-BEF58E7412DF}.dLibSingularity|x64.Build.0 = dLibSingularity|x64
-		{F7558596-6580-43F5-A8C1-BEF58E7412DF}.sLibSingularity|x64.ActiveCfg = sLibSingularity|x64
-		{F7558596-6580-43F5-A8C1-BEF58E7412DF}.sLibSingularity|x64.Build.0 = sLibSingularity|x64
+		{F7558596-6580-43F5-A8C1-BEF58E7412DF}.LibSingularity|x64.ActiveCfg = LibSingularity|x64
+		{F7558596-6580-43F5-A8C1-BEF58E7412DF}.LibSingularity|x64.Build.0 = LibSingularity|x64
 		{F7558596-6580-43F5-A8C1-BEF58E7412DF}.VisualSingularity|x64.ActiveCfg = VisualSingularity|x64
 		{F7558596-6580-43F5-A8C1-BEF58E7412DF}.VisualSingularity|x64.Build.0 = VisualSingularity|x64
 	EndGlobalSection

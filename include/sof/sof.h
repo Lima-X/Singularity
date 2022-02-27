@@ -86,6 +86,7 @@
 #include <atlbase.h>
 #include <timeapi.h>
 
+#undef FACILITY_CONTROL
 #endif
 #pragma endregion
 

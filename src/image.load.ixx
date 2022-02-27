@@ -12,51 +12,22 @@ module;
 export module sof.image.load;
 
 
-// ImageHelp module exception report model implementation,
-// all tools of this toolset throw this type when they encounter a fatal issue
-export class ImageHelpException 
-	: public CommonExceptionType {
-public:
-	enum ExceptionCode : UnderlyingType {
-		STATUS_FAILED_TO_OPEN_FILE = -2000,
-		STATUS_FAILED_TO_CLOSE_FILE,
-		STATUS_FAILED_FILE_POINTER,
-		STATUS_FAILED_IO_OPERATION,
-		STATUS_SIZE_NOT_BIGGER_OR_EQUAL,
-		STATUS_FAILED_SIGNATURE_TEST,
-		STATUS_IMAGEHELP_REFUSE_WORK,
-		STATUS_FAILED_TO_CREATE_MAP,
-		STATUS_INVALID_MEMORY_ADDRESS,
-		STATUS_IMAGE_NOT_SUITABLE,
-		STATUS_UNSUPPORTED_RELOCATION,
-		STATUS_HANDLE_ALREADY_REJECTED,
-		STATUS_IMAGE_ALREADY_MAPPED,
-		STATUS_ALREADY_UNMAPPED_VIEW,
-		STATUS_ABORTED_BY_ITRACKER,
-
-		STATUS_INVALID_STATUS = 0
-	};
-
-	ImageHelpException(
-		IN const std::string_view& ExceptionText,
-		IN       ExceptionCode     StatusCode
-	)
-		: CommonExceptionType(ExceptionText,
-			StatusCode,
-			CommonExceptionType::EXCEPTION_IMAGE_HELP) {
-		TRACE_FUNCTION_PROTO;
-	}
-};
-
-
 // Interface for getting the base functionality in order to avoid crtp-plugin type issues,
 // this also includes interfaces, to provide functionality and track data
 export class IImageLoaderHelp {
 public:
 
-	virtual byte_t* GetImageFileMapping() const = 0;
-
 	virtual std::string_view GetImageFileName() const = 0;
+	virtual byte_t* GetImageFileMapping() const = 0;
+	virtual IMAGE_DOS_HEADER& GetImageDosHeader() const = 0;
+	virtual IMAGE_NT_HEADERS& GetImageHeader() const = 0;
+	virtual IMAGE_FILE_HEADER& GetImageFileHeader() const = 0;
+	virtual IMAGE_OPTIONAL_HEADER& GetImageOptionalHeader() const = 0;
+	virtual std::span<IMAGE_DATA_DIRECTORY> GetImageDataSections() const = 0;
+	virtual IMAGE_DATA_DIRECTORY& GetImageDataSection(
+		IN int32_t DataDirectoryIndex
+	) const = 0;
+	virtual std::span<IMAGE_SECTION_HEADER> GetImageSectionHeaders() const = 0;
 };
 export class IImageLoaderTracker {
 public:
@@ -215,11 +186,11 @@ public:
 			FILE_ATTRIBUTE_NORMAL,
 			nullptr);
 		if (FileHandle == INVALID_HANDLE_VALUE)
-			throw ImageHelpException(
+			throw SingularityException(
 				fmt::format("Failed to open file \"{}\" with {}",
 					ImageFileName,
 					GetLastError()),
-				ImageHelpException::STATUS_FAILED_TO_OPEN_FILE);
+				SingularityException::STATUS_FAILED_TO_OPEN_FILE);
 		SPDLOG_INFO("Opened file \"{}\" with {} access rights",
 			ImageFileName,
 			FileAccess);
@@ -242,8 +213,8 @@ public:
 		TRACE_FUNCTION_PROTO;
 
 		if (FileHandle == INVALID_HANDLE_VALUE)
-			throw ImageHelpException("Filehandle has already been closed and rejected",
-				ImageHelpException::STATUS_HANDLE_ALREADY_REJECTED);
+			throw SingularityException("Filehandle has already been closed and rejected",
+				SingularityException::STATUS_HANDLE_ALREADY_REJECTED);
 		CloseHandle(FileHandle);
 		FileHandle = INVALID_HANDLE_VALUE;
 	}
@@ -268,23 +239,23 @@ public:
 
 		// Check if FileHandle has been rejected or if we are mapped already
 		if (FileHandle == INVALID_HANDLE_VALUE)
-			throw ImageHelpException("The file handle has already been rejected, cannot map rejected file",
-				ImageHelpException::STATUS_HANDLE_ALREADY_REJECTED);
+			throw SingularityException("The file handle has already been rejected, cannot map rejected file",
+				SingularityException::STATUS_HANDLE_ALREADY_REJECTED);
 		if (ImageMapping.get())
-			throw ImageHelpException(
+			throw SingularityException(
 				fmt::format("The image has already been mapped to {}, may not map twice",
 					static_cast<void*>(ImageMapping.get())),
-				ImageHelpException::STATUS_IMAGE_ALREADY_MAPPED);
+				SingularityException::STATUS_IMAGE_ALREADY_MAPPED);
 
 		// Validate image type by testing DOS header for magic value
 		auto DosHeaderSignature = ReadFileTypeByOffset<
 			decltype(IMAGE_DOS_HEADER::e_magic)>(
 				OFFSET_OF(IMAGE_DOS_HEADER, e_magic));
 		if (DosHeaderSignature != IMAGE_DOS_SIGNATURE)
-			throw ImageHelpException(
+			throw SingularityException(
 				fmt::format("The image opened has a bad DOS header or is not a PE-COFF image, detected [{:#04x}]",
 					DosHeaderSignature),
-				ImageHelpException::STATUS_FAILED_SIGNATURE_TEST);
+				SingularityException::STATUS_FAILED_SIGNATURE_TEST);
 		SPDLOG_INFO("Validated image header, signature matches DOS header");
 
 		// Dynamically resolve image size and other base meta data through minimal reads,
@@ -301,11 +272,11 @@ public:
 				ModuleHeaderOffset + OFFSET_OF(IMAGE_NT_HEADERS, OptionalHeader.Magic));
 		if (PeHeaderSignature != IMAGE_NT_SIGNATURE ||
 			OptHeaderSignature != IMAGE_NT_OPTIONAL_HDR_MAGIC)
-			throw ImageHelpException(
+			throw SingularityException(
 				fmt::format("The file opened has bad PE/Opt -headers, or is not a PE-COFF image, detected [{:08x}][{:04x}]",
 					PeHeaderSignature,
 					OptHeaderSignature),
-				ImageHelpException::STATUS_FAILED_SIGNATURE_TEST);
+				SingularityException::STATUS_FAILED_SIGNATURE_TEST);
 		SPDLOG_INFO("Validated image header 2, signatures match PE headers");
 
 		// We can now assume the file is half valid as the headers are signed, 
@@ -319,11 +290,11 @@ public:
 			SizeOfImage);
 		if (VirtualExtension) {
 			if (VirtualExtension < SizeOfImage)
-				throw ImageHelpException(
+				throw SingularityException(
 					fmt::format("The passed virtual extension of {} was smaller than the detected virtual image size of {}",
 						VirtualExtension,
 						SizeOfImage),
-					ImageHelpException::STATUS_SIZE_NOT_BIGGER_OR_EQUAL);
+					SingularityException::STATUS_SIZE_NOT_BIGGER_OR_EQUAL);
 			SizeOfImage = static_cast<decltype(IMAGE_OPTIONAL_HEADER::SizeOfImage)>(VirtualExtension);
 		} 
 
@@ -333,9 +304,9 @@ public:
 			IN void* MemoryAddress
 			) -> void {
 				if (MemoryAddress == nullptr)
-					throw ImageHelpException(
+					throw SingularityException(
 						"Memory assertion failed, presumable an allocation or commitment of memory failed to succeed",
-						ImageHelpException::STATUS_INVALID_MEMORY_ADDRESS);
+						SingularityException::STATUS_INVALID_MEMORY_ADDRESS);
 		};
 
 		// Reserve 2gb of virtual memory of to where we map the image,
@@ -386,10 +357,10 @@ public:
 		}
 		#undef MERGE_CHECK_IMAGE
 		if (ImageFileCheckPattern)
-			throw ImageHelpException(
+			throw SingularityException(
 				fmt::format("The image opened is not suitable for processing, detected [{:05b}] failures",
 					ImageFileCheckPattern),
-				ImageHelpException::STATUS_IMAGE_NOT_SUITABLE);	
+				SingularityException::STATUS_IMAGE_NOT_SUITABLE);
 		SPDLOG_INFO("Fully validated image, the image is suitable for processing");
 
 
@@ -459,11 +430,11 @@ public:
 				FILE_ATTRIBUTE_NORMAL,
 				nullptr);
 			if (DisposableFileHandle == INVALID_HANDLE_VALUE)
-				throw ImageHelpException(
+				throw SingularityException(
 					fmt::format("Failed to reopen file \"{}\" with {}",
 						ImageFileName,
 						GetLastError()),
-					ImageHelpException::STATUS_FAILED_TO_OPEN_FILE);
+					SingularityException::STATUS_FAILED_TO_OPEN_FILE);
 			SPDLOG_INFO("Reopened file \"{}\" with {} access rights",
 				ImageFileName,
 				GENERIC_WRITE);
@@ -490,11 +461,11 @@ public:
 			FILE_ATTRIBUTE_NORMAL,
 			nullptr);
 		if (DisposableFileHandle == INVALID_HANDLE_VALUE)
-			throw ImageHelpException(
+			throw SingularityException(
 				fmt::format("Failed to reopen file \"{}\" with {}",
 					ImageFileName,
 					GetLastError()),
-				ImageHelpException::STATUS_FAILED_TO_OPEN_FILE);
+				SingularityException::STATUS_FAILED_TO_OPEN_FILE);
 		SPDLOG_INFO("Opened new file \"{}\" with {} access rights",
 			ImageFileName,
 			GENERIC_WRITE);
@@ -574,11 +545,11 @@ public:
 					break;
 
 				default:
-					throw ImageHelpException(
+					throw SingularityException(
 						fmt::format("The relocation entry at {} for {}, was unsupported",
 							static_cast<void*>(&BaseRelocation),
 							BaseRelocationAddress),
-						ImageHelpException::STATUS_UNSUPPORTED_RELOCATION);
+						SingularityException::STATUS_UNSUPPORTED_RELOCATION);
 				}
 			}
 
@@ -615,12 +586,12 @@ public:
 				nullptr,
 				FILE_BEGIN);
 			if (IoStatus == 0)
-				throw ImageHelpException(
+				throw SingularityException(
 					fmt::format("Failed to move file pointer of file [{}] to {:x} with {}",
 						FileHandle,
 						FileOffset,
 						GetLastError()),
-					ImageHelpException::STATUS_FAILED_FILE_POINTER);
+					SingularityException::STATUS_FAILED_FILE_POINTER);
 			SPDLOG_DEBUG("Moved file pointer of file [{}] to offset {:x}",
 				FileHandle,
 				FileOffset);
@@ -646,12 +617,12 @@ public:
 
 		// Check Io operation for error and throw
 		if (IoStatus == 0)
-			throw ImageHelpException(
+			throw SingularityException(
 				fmt::format("Failed to read/write on file [{}] of size {:x} with {}",
 					FileHandle,
 					RawDataLength,
 					GetLastError()),
-				ImageHelpException::STATUS_FAILED_IO_OPERATION);
+				SingularityException::STATUS_FAILED_IO_OPERATION);
 		SPDLOG_INFO("Read/Wrote file [{}] at [{:x}:{:x}]",
 			FileHandle,
 			FileOffset, RawDataLength);
@@ -732,6 +703,30 @@ public:
 				GetCoffMemberByTemplateId<GET_FILE_HEADER>().NumberOfSections);
 		}
 	}
+
+	IMAGE_DOS_HEADER& GetImageDosHeader() const override {
+		TRACE_FUNCTION_PROTO; return GetCoffMemberByTemplateId<GET_DOS_HEADER>();
+	}
+	IMAGE_NT_HEADERS& GetImageHeader() const override {
+		TRACE_FUNCTION_PROTO; return GetCoffMemberByTemplateId<GET_IMAGE_HEADER>();
+	}
+	IMAGE_FILE_HEADER& GetImageFileHeader() const override {
+		TRACE_FUNCTION_PROTO; return GetCoffMemberByTemplateId<GET_FILE_HEADER>();
+	}
+	IMAGE_OPTIONAL_HEADER& GetImageOptionalHeader() const override {
+		TRACE_FUNCTION_PROTO; return GetCoffMemberByTemplateId<GET_OPTIONAL_HEADER>();
+	}
+	std::span<IMAGE_DATA_DIRECTORY> GetImageDataSections() const override {
+		TRACE_FUNCTION_PROTO; return GetCoffMemberByTemplateId<GET_DATA_DIRECTORIES>();
+	}
+	IMAGE_DATA_DIRECTORY& GetImageDataSection(
+		IN int32_t DataDirectoryIndex
+	) const override {
+		TRACE_FUNCTION_PROTO; return GetCoffMemberByTemplateId<GET_DATA_DIRECTORIES>()[DataDirectoryIndex];
+	}
+	std::span<IMAGE_SECTION_HEADER> GetImageSectionHeaders() const override {
+		TRACE_FUNCTION_PROTO; return GetCoffMemberByTemplateId<GET_SECTION_HEADERS>();
+	}
 #pragma endregion
 
 	byte_t* GetImageFileMapping() const {
@@ -753,8 +748,8 @@ private:
 		// Set internal file handle and check if any mapping is available
 		FileHandle = DisposableFileHandle;
 		if (!ImageMapping)
-			throw ImageHelpException("Cannot reconstruct image from already unmapped view",
-				ImageHelpException::STATUS_ALREADY_UNMAPPED_VIEW);
+			throw SingularityException("Cannot reconstruct image from already unmapped view",
+				SingularityException::STATUS_ALREADY_UNMAPPED_VIEW);
 
 		// Rebuild the image from virtual memory, this process is basically the mapping process in reverse
 		{
