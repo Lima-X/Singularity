@@ -59,7 +59,7 @@ export int32_t WinMain(
 	try {
 		// Initialize and configure spdlog/fmt logger
 		spdlog::init_thread_pool(65536, 1);
-		VisualSingularityLogger = spdlog::create_async<ImGuiSpdLogAdaptor>("VSOFL");
+		VisualSingularityLogger = spdlog::create_async<sof::ImGuiSpdLogAdaptor>("VSOFL");
 		spdlog::set_default_logger(VisualSingularityLogger);
 		spdlog::set_pattern(SPDLOG_SINGULARITY_SMALL_PATTERN);
 #ifdef NDEBUG
@@ -143,9 +143,9 @@ export int32_t WinMain(
 	// They provide a simplified desynchronized interface for singularities api in the context
 	// of being usable from the ui, this obviously means that the things you can do through the ui
 	// are partially restricted in the sense that they don't allow full control of the api.
-	VisualSingularityApp SingularityApiController(0);
-	VisualTrackerApp DataTrackLog(SingularityApiController);
-	auto VisualLogger = static_cast<ImGuiSpdLogAdaptor*>(VisualSingularityLogger->sinks()[0].get());
+	sof::VisualSingularityApp SingularityApiController(0);
+	sof::VisualTrackerApp DataTrackLog(SingularityApiController);
+	auto VisualLogger = static_cast<sof::ImGuiSpdLogAdaptor*>(VisualSingularityLogger->sinks()[0].get());
 	enum ImmediateProgramPhase {
 		PHASE_NEUTRAL_STARTUP = 0,
 		STATE_WAITING_INPUTFILE_DLG,
@@ -191,7 +191,7 @@ export int32_t WinMain(
 			// 2. Primary Controller window, shows statistics and
 			ImGui::Begin("GeneralProgress tracker");                          // Create a window called "Hello, world!" and append into it.
 			{
-				static const VisualLoadImageObject* LoaderObjectState = nullptr;
+				static const sof::VisualLoadImageObject* LoaderObjectState = nullptr;
 
 				// File selection header 
 				static char InputFilePath[MAX_PATH]{};
@@ -199,7 +199,7 @@ export int32_t WinMain(
 				static char OutputPath[MAX_PATH]{};
 				static bool LoadWithPdb = true;
 				{
-					static const VisualOpenFileObject* LastFileOpenDialog = nullptr;
+					static const sof::VisualOpenFileObject* LastFileOpenDialog = nullptr;
 					static bool EnableLastErrorMessage = false;
 					static std::string LastErrorMessage{};
 					static ImVec4 LastErrorColor{};
@@ -211,19 +211,19 @@ export int32_t WinMain(
 
 						// Handle last requested IFileOpenDialog
 						switch (LastFileOpenDialog->GetWorkObjectState()) {
-						case VisualOpenFileObject::STATE_COM_ERROR:
+						case sof::VisualOpenFileObject::STATE_COM_ERROR:
 							LastErrorColor = ImVec4(1, 0, 0, 1);
 							LastErrorMessage = "Com interface failed to select file";
 							break;
 
-						case VisualOpenFileObject::STATE_DIALOG_DONE:
+						case sof::VisualOpenFileObject::STATE_DIALOG_DONE:
 							if (!LastFileOpenDialog->GetResultString().empty())
 								strcpy(std::array{ InputFilePath, PathToPdb }
 									[ProgramPhase - STATE_WAITING_INPUTFILE_DLG],
 									LastFileOpenDialog->GetResultString().data());
 						}
-						if (LastFileOpenDialog->GetWorkObjectState() < IVisualWorkObject::STATE_CALL_SCHEDULED ||
-							LastFileOpenDialog->GetWorkObjectState() >= IVisualWorkObject::STATE_CALL_FINISHED) {
+						if (LastFileOpenDialog->GetWorkObjectState() < sof::IVisualWorkObject::STATE_CALL_SCHEDULED ||
+							LastFileOpenDialog->GetWorkObjectState() >= sof::IVisualWorkObject::STATE_CALL_FINISHED) {
 
 							// Close the dialog dispatch object
 							SingularityApiController.FreeWorkItemFromPool(LastFileOpenDialog);
@@ -236,13 +236,13 @@ export int32_t WinMain(
 
 						// Check processing state for errors and reset
 						switch (LoaderObjectState->GetWorkObjectState()) {
-						case VisualLoadImageObject::STATE_ABORTED:
+						case sof::VisualLoadImageObject::STATE_ABORTED:
 							LastErrorColor = ImVec4(1, 1, 0, 1);
 							break;
-						case VisualLoadImageObject::STATE_ERROR:
+						case sof::VisualLoadImageObject::STATE_ERROR:
 							LastErrorColor = ImVec4(1, 0, 0, 1);
 						}
-						if (LoaderObjectState->GetWorkObjectState() < IVisualWorkObject::STATE_CALL_SCHEDULED) {
+						if (LoaderObjectState->GetWorkObjectState() < sof::IVisualWorkObject::STATE_CALL_SCHEDULED) {
 
 							LastErrorMessage = LoaderObjectState->GetExceptionReport()->ExceptionText;
 							ProgramPhase = PHASE_NEUTRAL_STARTUP;
@@ -258,7 +258,7 @@ export int32_t WinMain(
 					ImGui::SameLine();
 					if (ImGui::Button("...##ImageSelect")) {
 
-						OpenFileDialogConfig ConfigRetainer{};
+						sof::OpenFileDialogConfig ConfigRetainer{};
 						ConfigRetainer.DefaultExtension = ".exe;.dll;.sys";
 						ConfigRetainer.FileNameLabel = "PE-COFF executable image:";
 						ConfigRetainer.FileFilters = {
@@ -282,7 +282,7 @@ export int32_t WinMain(
 					ImGui::SameLine();
 					if (ImGui::Button("...##PdbSelect")) {
 
-						OpenFileDialogConfig ConfigRetainer{};
+						sof::OpenFileDialogConfig ConfigRetainer{};
 						ConfigRetainer.DefaultExtension = ".pdb";
 						ConfigRetainer.DefaultSelection = filesystem::path(InputFilePath).replace_extension(".pdb").filename().string();
 						ConfigRetainer.FileNameLabel = "Program database file:";
@@ -349,7 +349,7 @@ export int32_t WinMain(
 							// it has to be trashed and returned to a cleanup function to free it,
 							// after that contained information is no longer valid and must be preserved.
 							LoaderObjectState = SingularityApiController.QueueLoadImageRequestWithTracker2(
-								std::make_unique<VisualLoadImageObject>(
+								std::make_unique<sof::VisualLoadImageObject>(
 									InputFilePath,
 									!LoadWithPdb,
 									PathToPdb,
@@ -371,7 +371,7 @@ export int32_t WinMain(
 						"%d us", ImGuiSliderFlags_Logarithmic);
 					DataTrackLog.VirtualSleepSliderInUs = SliderValue;
 					ImGui::SameLine();
-					HelpMarker("Virtual time spooling can make use of an sleeping spinlocking hybrid interval timer, "
+					sof::HelpMarker("Virtual time spooling can make use of an sleeping spinlocking hybrid interval timer, "
 						"this can result in cpu thrashing as its extremely hard on a core while waiting a very short interval.\n"
 						"Anything below the minimum system clock resolution will be spinlocked, "
 						"switch to blocking mode to avoid thrashing, this will however result in inaccurate timings.\n\n"
@@ -389,7 +389,7 @@ export int32_t WinMain(
 				ImGui::Separator();
 
 				// The progress section, a quick lookup for some data while doing things
-				static const VisualSOPassObject* MainSOBPassObject = nullptr;
+				static const sof::VisualSOPassObject* MainSOBPassObject = nullptr;
 				{
 					static const char* SelectionStateText;
 
@@ -414,19 +414,19 @@ export int32_t WinMain(
 					case STATE_IMAGE_LOADING_MEMORY: // The backend is loading the file, we can print load information
 
 						switch (LoaderObjectState->GetWorkObjectState()) {
-						case VisualLoadImageObject::STATE_SCHEDULED:
+						case sof::VisualLoadImageObject::STATE_SCHEDULED:
 							SelectionStateText = "File load is being scheduled...";
 							GlobalProgressOverlay = LoadWithPdb ? "0 / 3" : "0 / 2";
 							break;
 
-						case VisualLoadImageObject::STATE_LAODING_SYMBOLS:
+						case sof::VisualLoadImageObject::STATE_LAODING_SYMBOLS:
 							SelectionStateText = "Loading symbols for image";
 							GlobalProgressOverlay = LoadWithPdb ? "0 / 3" : "0 /2";
 							SubFrameProgressOverlay = "Cannot track sub processing, waiting...";
 							SubFrameProgress = 0;
 							break;
 
-						case VisualLoadImageObject::STATE_LOADING_MEMORY:
+						case sof::VisualLoadImageObject::STATE_LOADING_MEMORY:
 							SelectionStateText = "Loading image into primary system memory";
 							GlobalProgressOverlay = LoadWithPdb ? "1 / 3" : "1 / 2";
 							GlobalProgress = 1.f / (LoadWithPdb ? 3 : 2);
@@ -438,7 +438,7 @@ export int32_t WinMain(
 								DataTrackLog.NumberOfSectionsInImage;
 							break;
 
-						case VisualLoadImageObject::STATE_RELOCATING:
+						case sof::VisualLoadImageObject::STATE_RELOCATING:
 							SelectionStateText = "Relocating image in memory view";
 							GlobalProgressOverlay = LoadWithPdb ? "2 / 3" : "1 /2";
 							GlobalProgress = (2.f - !LoadWithPdb) / (LoadWithPdb ? 3 : 2);
@@ -452,7 +452,7 @@ export int32_t WinMain(
 							SubFrameProgress = static_cast<float>(DataTrackLog.RelocsApplied) / LoaderObjectState->GetPolyXNumber();
 							break;
 
-						case VisualLoadImageObject::STATE_FULLY_LOADED:
+						case sof::VisualLoadImageObject::STATE_FULLY_LOADED:
 							SelectionStateText = "Fully loaded image into view";
 							GlobalProgressOverlay = LoadWithPdb ? "3 / 3" : "2 / 2";
 							GlobalProgress = 1;
@@ -471,7 +471,7 @@ export int32_t WinMain(
 					case STATE_IMAGE_PROCESSING_AUTO:
 						switch (MainSOBPassObject->GetWorkObjectState()) {
 
-						case VisualSOPassObject::STATE_PROCESSING:
+						case sof::VisualSOPassObject::STATE_PROCESSING:
 							SelectionStateText = "Processing image data";
 
 							GlobalProgressOverlay = fmt::format("{} / {}",
@@ -484,7 +484,7 @@ export int32_t WinMain(
 							break;
 
 
-						case VisualSOPassObject::STATE_ALL_PASSES_APLIED_DONE:
+						case sof::VisualSOPassObject::STATE_ALL_PASSES_APLIED_DONE:
 							ProgramPhase = STATE_IMAGE_WAS_PROCESSED;
 						default:
 							break;
@@ -537,14 +537,14 @@ export int32_t WinMain(
 						ImGui::EndCombo();
 					}
 					ImGui::SameLine();
-					HelpMarker("Selects how the engine should search for code, "
+					sof::HelpMarker("Selects how the engine should search for code, "
 						"if non is selected the highest available is chosen by default");
 
 					if (ImGui::Button("Run Analysis")) {
 
 						// Initialalize substation
 
-						auto SOBPassUnqueuedObject = std::make_unique<VisualSOPassObject>(&DataTrackLog);
+						auto SOBPassUnqueuedObject = std::make_unique<sof::VisualSOPassObject>(&DataTrackLog);
 						SOBPassUnqueuedObject->LoaderObject = LoaderObjectState;
 
 						MainSOBPassObject = SingularityApiController.QueueMainPassProcessObject(
@@ -615,11 +615,8 @@ export int32_t WinMain(
 			glfwSwapBuffers(PrimaryViewPort);
 		}
 	}
-	catch (const CommonExceptionType& ExecptionInformation) {
-		__debugbreak();
-	}
 	catch (const std::exception& Exception) {
-		__debugbreak();
+		__debugbreak(); // cant do anything here anyways, well not really
 	}
 
 	// Cleanup

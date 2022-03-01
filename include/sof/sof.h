@@ -188,3 +188,8 @@ namespace filesystem = std::filesystem;
 #ifndef SOFP_DONT_IMPLEMENT_BASE
 import sof.base;
 #endif
+
+#define MAKE_HRESULT(Severity, Facility, Code) \
+		((Severity) << 31 | 1 << 29 | \
+		(Facility) << 16 & 0x7ff0000 | \
+		(Code) & 0xffff)
