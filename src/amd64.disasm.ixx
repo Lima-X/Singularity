@@ -59,15 +59,15 @@ export namespace sof {
 	// at least not without writing millions of heuristics and special edge case handlers.
 	export class CfgGenerator {
 		struct DisasseblerEngineState {                       // Defines the pass down stack state for the recursive disassembly engine
-			IN ControlFlowGraph&     ControlFlowGraphContext; // Reference to the cfg used by the current engines stack   (passed down)
+			IN LlirControlFlowGraph&     ControlFlowGraphContext; // Reference to the cfg used by the current engines stack   (passed down)
 			IN const FunctionAddress PredictedFunctionBounds; // Constants of the function frame itself, start and size   (passed down)		
 			IN IDisassemblerTracker& DataTracker;
 
 			struct NextScanAddress {
 				IN    byte_t*                     NextCodeScanAddress; // Virtual address for the next engine frame to disassemble (passed down)
-				IN    ControlFlowGraph::CfgNode*  PreviousNodeForLink; // A pointer to the callers node of its frame of the cfg    (passed down)
+				IN    LlirControlFlowGraph::CfgNode*  PreviousNodeForLink; // A pointer to the callers node of its frame of the cfg    (passed down)
 																	   // The callee has to link itself into the passed node
-				INOUT ControlFlowGraph::CfgNode** NextFrameHookInLink; // A field for the callee to fill with its node of frame    (shared)
+				INOUT LlirControlFlowGraph::CfgNode** NextFrameHookInLink; // A field for the callee to fill with its node of frame    (shared)
 			};
 			std::deque<NextScanAddress> NextCodeScanAddressDeque;
 		};
@@ -92,7 +92,7 @@ export namespace sof {
 		// which then is self reliant, additionally provides a default tracker
 		// Presumed function bounds in which the engine should try to decompile
 		// A data tracker interface instance, this is used to trace and track
-		ControlFlowGraph GenerateCfgFromFunction2( // Tries to generate a cfg using the underlying disassembler engine,
+		LlirControlFlowGraph GenerateCfgFromFunction2( // Tries to generate a cfg using the underlying disassembler engine,
 															   // this function serves as a driver to start the disassembler,
 															   // which then is self reliant, additionally provides a default tracker
 			IN const FunctionAddress& PossibleFunction         // Presumed function bounds in which the engine should try to decompile
@@ -119,7 +119,7 @@ export namespace sof {
 		// in which case the new node is stripped to the point of the overlaying nodes start address,
 		// finally the new node is linked into the graph and the overlaying node is referenced.
 		// 
-		ControlFlowGraph GenerateCfgFromFunction2(             // A deque driven reimplementation of the legacy version,
+		LlirControlFlowGraph GenerateCfgFromFunction2(         // A deque driven reimplementation of the legacy version,
 															   // this avoids huge callstack frames by emulating the recusion with a deque
 															   // sacrificing heap memory and simplicity for efficiency and stability
 			IN  const FunctionAddress&      PossibleFunction,
@@ -145,12 +145,11 @@ export namespace sof {
 				static_cast<void*>(PossibleFunction.first));
 
 			// Setup virtual recursive stack for virtual framing
-			ControlFlowGraph CurrentCfgContext(ImageMapping,
+			LlirControlFlowGraph CurrentCfgContext(ImageMapping,
 				PossibleFunction);
 			DisasseblerEngineState CfgTraversalStack{
 				.ControlFlowGraphContext = CurrentCfgContext,
 				.PredictedFunctionBounds = PossibleFunction,
-			//	.BranchingFrameStack = -1,
 				.DataTracker = ExternDataTracker,
 				.NextCodeScanAddressDeque = { { PossibleFunction.first } }
 			};
@@ -191,7 +190,7 @@ export namespace sof {
 		__forceinline void DoDecodeLoopTillNodeEdge(
 			IN DisasseblerEngineState&    CfgTraversalStack,
 			IN byte_t*                    VirtualInstructionPointer,
-			IN ControlFlowGraph::CfgNode* CfgNodeForCurrentFrame
+			IN LlirControlFlowGraph::CfgNode* CfgNodeForCurrentFrame
 		) {
 			TRACE_FUNCTION_PROTO;
 			for (;;) {
@@ -199,7 +198,9 @@ export namespace sof {
 				// Allocate instruction entry for current cfg node frame
 				CfgTraversalStack.DataTracker(IDisassemblerTracker::TRACKER_CFGNODE_COUNT,
 					IDisassemblerTracker::UPDATE_INCREMENT_COUNTER);
-				auto& CfgNodeEntry = CfgNodeForCurrentFrame->AllocateCfgNodeEntry();
+
+				LlirAmd64NativeEncoded* CfgNodeEntry = new LlirAmd64NativeEncoded(
+					CfgTraversalStack.ControlFlowGraphContext.GenNextSymbolIdentifier());
 				xed_decoded_inst_zero_set_mode(&CfgNodeEntry.DecodedInstruction,
 					&IntelXedState);
 				CfgNodeEntry.OriginalAddress = VirtualInstructionPointer;
@@ -372,8 +373,8 @@ export namespace sof {
 
 		__forceinline bool HeuristicDetectInterrupt29h(
 			IN DisasseblerEngineState&     CfgTraversalStack,
-			IN ControlFlowGraph::CfgNode*  CfgNodeForCurrentFrame,
-			IN ControlFlowGraph::CfgEntry& CfgNodeEntry
+			IN LlirControlFlowGraph::CfgNode*  CfgNodeForCurrentFrame,
+			IN LlirControlFlowGraph::CfgEntry& CfgNodeEntry
 		) {
 			TRACE_FUNCTION_PROTO;
 
@@ -412,8 +413,8 @@ export namespace sof {
 		__forceinline bool HeuristicDetectMsvcX64RvaJumptableCommon(
 			IN DisasseblerEngineState& CfgTraversalStack,
 			IN byte_t* VirtualInstructionPointer,
-			IN ControlFlowGraph::CfgNode* CfgNodeForCurrentFrame,
-			IN ControlFlowGraph::CfgEntry& CfgNodeEntry
+			IN LlirControlFlowGraph::CfgNode* CfgNodeForCurrentFrame,
+			IN LlirControlFlowGraph::CfgEntry& CfgNodeEntry
 		) {
 
 			// MSVC has a common jumptable form/layout based on indices of into a table of rva's into code.
@@ -468,8 +469,8 @@ export namespace sof {
 		__forceinline void HandleRemoteInternodeLongJumpBranch(
 			IN DisasseblerEngineState& CfgTraversalStack,
 			IN byte_t*                 VirtualInstructionPointer,
-			IN ControlFlowGraph::CfgNode* CfgNodeForCurrentFrame,
-			IN ControlFlowGraph::CfgEntry& CfgNodeEntry
+			IN LlirControlFlowGraph::CfgNode* CfgNodeForCurrentFrame,
+			IN LlirControlFlowGraph::CfgEntry& CfgNodeEntry
 		) {
 			TRACE_FUNCTION_PROTO;
 
@@ -482,7 +483,7 @@ export namespace sof {
 			// Attempt to find an colliding node with the new address, if found the type of collision has to be determined
 			do {
 				auto OptionalPossibleCollidingNode = CfgTraversalStack.ControlFlowGraphContext.
-					FindNodeContainingVirtualAddress(ControlFlowGraph::SEARCH_REVERSE_PREORDER_NRL,
+					FindNodeContainingVirtualAddress(LlirControlFlowGraph::SEARCH_REVERSE_PREORDER_NRL,
 						VirtualBranchLocation);
 
 				// Check if a colliding node was found and if their heads match, aka identical node
@@ -535,16 +536,16 @@ export namespace sof {
 																 // and eliminates overlaying identical code (assumptions),
 																 // returns true if rebound, otherwise false to indicate no work
 			IN DisasseblerEngineState& CfgTraversalStack,     // The stack location of the disassembly engine for internal use
-			IN ControlFlowGraph::CfgNode& CfgNodeForCurrentFrame // The node to check for overlays and stripping/rebinding
+			IN LlirControlFlowGraph::CfgNode& CfgNodeForCurrentFrame // The node to check for overlays and stripping/rebinding
 		) {
 			TRACE_FUNCTION_PROTO;
 
 			// Potentially fell into a existing node already, verify and or strip and rebind,
 			// find possibly overlaying node and check
 			auto NodeTerminatorLocation = CfgNodeForCurrentFrame.back().OriginalAddress;
-			std::array<const ControlFlowGraph::CfgNode*, 1> CfgNodeExclusions{ &CfgNodeForCurrentFrame };
+			std::array<const LlirControlFlowGraph::CfgNode*, 1> CfgNodeExclusions{ &CfgNodeForCurrentFrame };
 			auto OptionalCollidingNode = CfgTraversalStack.ControlFlowGraphContext.FindNodeContainingVirtualAddressAndExclude(
-				ControlFlowGraph::SEARCH_REVERSE_PREORDER_NRL,
+				LlirControlFlowGraph::SEARCH_REVERSE_PREORDER_NRL,
 				NodeTerminatorLocation,
 				std::span{ CfgNodeExclusions });
 			if (OptionalCollidingNode) {
@@ -554,7 +555,7 @@ export namespace sof {
 				auto TouchIterator = std::find_if(CfgNodeForCurrentFrame.begin(),
 					CfgNodeForCurrentFrame.end(),
 					[StartAddressOfNode](
-						IN const ControlFlowGraph::CfgEntry& DecodeEntry
+						IN const LlirControlFlowGraph::CfgEntry& DecodeEntry
 						) -> bool {
 							TRACE_FUNCTION_PROTO;
 							return DecodeEntry.OriginalAddress == StartAddressOfNode;

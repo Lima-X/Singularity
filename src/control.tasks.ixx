@@ -249,7 +249,7 @@ export namespace sof {
 			byte_t* FunctionAddress;
 			size_t  FunctionSize;
 
-			std::unique_ptr<ControlFlowGraph> FunctionCfg;
+			std::unique_ptr<LlirControlFlowGraph> FunctionCfg;
 
 			std::mutex FunctionLock;
 		};

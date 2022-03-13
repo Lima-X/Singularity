@@ -11,7 +11,7 @@ export namespace sof {
 	class Amd64X64Lift {
 	public:
 		Amd64X64Lift(
-			IN ControlFlowGraph& ApplyOnCfg
+			IN LlirControlFlowGraph& ApplyOnCfg
 		)
 			: LiftingObject(ApplyOnCfg) {
 			TRACE_FUNCTION_PROTO;
@@ -32,7 +32,7 @@ export namespace sof {
 
 		}
 
-		ControlFlowGraph& LiftingObject;
+		LlirControlFlowGraph& LiftingObject;
 	};
 
 

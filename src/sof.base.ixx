@@ -98,7 +98,8 @@ export namespace sof {
 		EXCEPTION_TABLE_ENTRY(STATUS_HANDLE_ALREADY_REJECTED)\
 		EXCEPTION_TABLE_ENTRY(STATUS_IMAGE_ALREADY_MAPPED)\
 		EXCEPTION_TABLE_ENTRY(STATUS_ALREADY_UNMAPPED_VIEW)\
-		EXCEPTION_TABLE_ENTRY(STATUS_ABORTED_BY_ITRACKER)
+		EXCEPTION_TABLE_ENTRY(STATUS_ABORTED_BY_ITRACKER)\
+		EXCEPTION_TABLE_ENTRY(STATUS_ICFGE_TYPE_NOT_REGISTERED, = MAKE_HRESULT(SEVERITY_ERROR_YES, FACILITY_SOF_LLIR, 0xffff))
 
 	#define EXCEPTION_TABLE_ENTRY(Exception, Assignment) \
 		Exception Assignment,
@@ -108,7 +109,7 @@ export namespace sof {
 	#undef EXCEPTION_TABLE_ENTRY
 	#define EXCEPTION_TABLE_ENTRY(Exception, Assignment) \
 		{ Exception, #Exception },
-		inline static const
+		inline static const 
 		std::unordered_map<int32_t, std::string_view>
 		ExceptionTranslationTable{
 			EXCEPTION_TABLE_CONTENT
@@ -116,7 +117,19 @@ export namespace sof {
 	#undef EXCEPTION_TABLE_ENTRY
 	#pragma endregion
 
-		explicit SingularityException(
+		template<typename... Args>
+		explicit SingularityException(              
+			IN       int32_t           ExceptionStatusCode,
+			IN const std::string_view& ExceptionText,
+			IN       Args&&...         FormatArguments
+		) noexcept
+			: ExceptionText(fmt::format(ExceptionText,
+				std::forward<Args>(FormatArguments)...)),
+			StatusCode(static_cast<ExceptionCode>(ExceptionStatusCode)) {
+			TRACE_FUNCTION_PROTO;
+		}
+
+		explicit SingularityException(                // Legacy constructor
 			IN const std::string_view& ExceptionText,
 			IN       int32_t           StatusCode
 		) noexcept
@@ -127,6 +140,9 @@ export namespace sof {
 
 		const char* what() const noexcept final {
 			TRACE_FUNCTION_PROTO;
+
+			if (!WhatMessageContainer.empty())
+				return WhatMessageContainer.c_str();
 			auto StringForKey = ExceptionTranslationTable.find(StatusCode);
 			return StringForKey != ExceptionTranslationTable.end() ? StringForKey->second.data() :
 				(WhatMessageContainer = fmt::format("{:08x}", StatusCode)).c_str();
