@@ -39,21 +39,22 @@ import sof.image.load;
 // @/%[Destination] = [Opcode] [type] [Source1], [Source2]
 //
 
+
 export namespace sof {
 
-	class LlirGlobalSymbol {
+	class LlirSymbolObject {
 	public:
-		LlirGlobalSymbol(IN LlirGlobalSymbol&&) = default;
-		LlirGlobalSymbol& operator=(IN LlirGlobalSymbol&&) = default;
+		LlirSymbolObject(IN LlirSymbolObject&&) = default;
+		LlirSymbolObject& operator=(IN LlirSymbolObject&&) = default;
 
 		bool CompareUniqueIdentifier(
-			IN const LlirGlobalSymbol& OtherUniqueIdentifier
+			IN const LlirSymbolObject& OtherUniqueIdentifier
 		) const {
 			TRACE_FUNCTION_PROTO; return UniqueIdentifier == OtherUniqueIdentifier.UniqueIdentifier;
 		}
 		static bool CompareUniqueIdentifier(
-			IN const LlirGlobalSymbol& FirstUniqueIdentifier,
-			IN const LlirGlobalSymbol& SecondUniqueIdentifier
+			IN const LlirSymbolObject& FirstUniqueIdentifier,
+			IN const LlirSymbolObject& SecondUniqueIdentifier
 		) {
 			TRACE_FUNCTION_PROTO; return FirstUniqueIdentifier.UniqueIdentifier == SecondUniqueIdentifier.UniqueIdentifier;
 		}
@@ -61,7 +62,7 @@ export namespace sof {
 		const uint32_t UniqueIdentifier;
 
 	protected:
-		LlirGlobalSymbol(
+		LlirSymbolObject(
 			IN uint32_t UniqueIdentifier
 		)
 			: UniqueIdentifier(UniqueIdentifier) {
@@ -69,28 +70,42 @@ export namespace sof {
 		}
 	};
 
+	// Descibes a global symbol that is used to identify functions, globals, relocations, and others
+	class LlirGlobalSymbol
+		: public LlirSymbolObject {};
 
 	// Symbol identifier for cfg local lookup, a symbol may only be allocated through the cfg itself
 	// cannot me copied but only moved, and is assocatiated to a specific cfg,
 	// it may not be transfered to any other cfg without translation
 	class LlirControlFlowGraph;
 	class LlirLocalSymbol
-		: public LlirGlobalSymbol {
+		: public LlirSymbolObject {
 		friend class Llir3acOperandSymbolRegistry;
+		friend class Llir3AddressCode;
 		friend class LlirControlfFlowGraph;
+	public:
+		LlirLocalSymbol(
+			IN LlirControlFlowGraph& OwningCfgContext
+		)
+			: LlirSymbolObject(0),
+			OwningCfgContext(OwningCfgContext) {
+			TRACE_FUNCTION_PROTO;
+		}
+
 	private:
 		LlirLocalSymbol(
 			IN LlirControlFlowGraph& OwningCfgContext,
 			IN uint32_t              UniqueIdentifier
 		)
-			: LlirGlobalSymbol(UniqueIdentifier),
-			  OwningCfgContext(OwningCfgContext) {
+			: LlirSymbolObject(UniqueIdentifier),
+			OwningCfgContext(OwningCfgContext) {
 			TRACE_FUNCTION_PROTO;
 		}
 
 		LlirControlFlowGraph& OwningCfgContext;
 	};
-	
+
+
 	// A polymorphic base type stored as a list in cfg nodes used to identify the and define abstractions
 	class ICfgInstruction
 		: public LlirLocalSymbol {
@@ -105,7 +120,7 @@ export namespace sof {
 			IN CfgStatementType  TypeOfStatement
 		)
 			: LlirLocalSymbol(std::move(UniqueIdentifier)),
-			  TypeOfStatement(TypeOfStatement) {
+			TypeOfStatement(TypeOfStatement) {
 			TRACE_FUNCTION_PROTO;
 		}
 		virtual ~ICfgInstruction() {
@@ -117,6 +132,9 @@ export namespace sof {
 
 		const CfgStatementType TypeOfStatement;
 	};
+
+
+
 
 	// Basic native encoding container for xed to store its data in
 	class LlirAmd64NativeEncoded
@@ -134,25 +152,9 @@ export namespace sof {
 		byte_t*			   OriginalAddress;
 	};
 
-#pragma region LLIR_3ac_major_ir_format_implementation
-	union LlirLogicalFlag {
-		enum FlagActionType {
-			LLIR_FLAG_SET = 0,
-			LLIR_FLAG_RESET,
-			LLIR_FLAG_WRITE,
-			LLIR_FLAG_TEST,
-		} FlagAction;
-		enum FlagFieldType {
-			LLIR_FLAG_NOT_IMPLEMENTED = 0,
-			LLIR_FLAG_CARRY,
-			LLIR_FLAG_AUXILARRY_CARRY,
-			LLIR_FLAG_PARITY_BIT,
-			LLIR_FLAG_ZERO,
-			LLIR_FLAG_SIGNED,
-			LLIR_FLAG_OVERFLOW,
-		} FlagField;
-	};
 
+
+#pragma region LlirOperandRegistrationSystem
 	class Llir3acOperand
 		: public LlirLocalSymbol {
 	public:
@@ -190,7 +192,350 @@ export namespace sof {
 		};
 	};
 
+	class Llir3acOperandSymbolRegistry
+		: private std::vector<Llir3acOperand> {
+		using vector_t = std::vector<Llir3acOperand>;
+	public:
+		Llir3acOperand& Allocate3acOperandEnlist() {
+			TRACE_FUNCTION_PROTO; return this->emplace_back();
+		}
 
+		Llir3acOperand* LocateAndRetrieve3acOperandForSymbol(
+			IN const LlirLocalSymbol& UniqueIdentifier
+		) {
+			TRACE_FUNCTION_PROTO;
+			auto OperandIterator = std::find_if(this->begin(),
+				this->end(),
+				[&UniqueIdentifier](
+					IN const value_type& OperandRegistryEntry
+					) -> bool {
+						TRACE_FUNCTION_PROTO; return OperandRegistryEntry.CompareUniqueIdentifier(UniqueIdentifier);
+				});
+			return OperandIterator == this->end() ? nullptr : &*OperandIterator;
+		}
+
+		using vector_t::begin;
+		using vector_t::cbegin;
+		using vector_t::end;
+		using vector_t::cend;
+		using vector_t::front;
+		using vector_t::back;
+	};
+#pragma endregion
+
+	// The projects core component, this is the intermediate representation format the engine translates code into.
+	// This representation can be used to transform and modify, adding and removing inclusive, the code loaded.
+	// The IR is optimized for taking form compatible to x86-64 assembly code and being expendable to allow 
+	// other modules to add functionality to it in order to work with it more easily, this is just the base work done.
+	// This IR takes the form of a control flow graph (cfg).
+	class LlirControlFlowGraph {
+		friend class LlirBasicBlock;
+		friend class CfgGenerator;
+	public:
+		union CfgFlagsUnion {
+			uint8_t FlatFlags;
+			struct {
+				uint8_t ContainsIncompletePaths : 1; // Set to indicate that a node contained was not fully resolved
+
+				// Internal BFlags
+				uint8_t ReservedCfgFlags : 6; // Reserved flags (for completions sake)
+				uint8_t TreeIsBeingTraversed : 1; // Indicates that the graph is currently being traversed, 
+													 // this flag is used to check for invocation of another traversal, 
+													 // as due to the locking system nested traversals aren't possible.
+			};
+		};
+
+		~LlirControlFlowGraph() {
+			TRACE_FUNCTION_PROTO;
+
+			std::vector<LlirBasicBlock*> Deleteables;
+			TraverseOrLocateNodeBySpecializedDFS(SEARCH_PREORDER_NLR,
+				[&Deleteables](
+					IN LlirBasicBlock* BlockOfCfg
+					) -> bool {
+						TRACE_FUNCTION_PROTO;
+						Deleteables.push_back(BlockOfCfg);
+						return false;
+				});
+			for (auto Deletable : Deleteables)
+				delete Deletable;
+			SPDLOG_INFO("Released " ESC_BRIGHTCYAN"{}" ESC_RESET" blocks from cfg " ESC_BRIGHTRED"{}",
+				Deleteables.size(),
+				static_cast<void*>(this));
+		}
+
+		LlirLocalSymbol GenNextSymbolIdentifier() {
+			TRACE_FUNCTION_PROTO;
+			return LlirLocalSymbol(*this,
+				++NextSymbolAllocator);
+		}
+		LlirBasicBlock* AllocateFloatingCfgNode() {
+			TRACE_FUNCTION_PROTO;
+
+			// The returned object is not managed, also doesnt have to be,
+			// allocation is inaccessible from outside of CfgGenerator anyways.
+			LlirBasicBlock* FloatingNode = new LlirBasicBlock(*this,
+				std::move(GenNextSymbolIdentifier()));
+			if (!InitialControlFlowGraphHead)
+				InitialControlFlowGraphHead = FloatingNode;
+			return FloatingNode;
+		}
+
+		LlirBasicBlock* GetInitialCfgNode() {
+			TRACE_FUNCTION_PROTO; return InitialControlFlowGraphHead;
+		}
+
+
+		uint32_t ValidateCfgOverCrossReferences() { // This function validates the graph by walking over every single entry
+													// and checking its cross references, and returns the number of violations
+													// NOTE: this function is not efficient and should not be called in hot code paths
+			TRACE_FUNCTION_PROTO;
+
+			uint32_t ViolationCount{};
+			TraverseOrLocateNodeBySpecializedDFS(SEARCH_PREORDER_NLR,
+				[&ViolationCount](
+					IN const LlirBasicBlock* TraversalNode
+					) -> bool {
+						TRACE_FUNCTION_PROTO;
+
+						auto NodeXrefCheck = [&ViolationCount, TraversalNode](
+							IN const LlirBasicBlock* RemoteNode
+							) -> void {
+								TRACE_FUNCTION_PROTO;
+
+								if (std::find(RemoteNode->InputFlowNodeLinks.begin(),
+									RemoteNode->InputFlowNodeLinks.end(),
+									TraversalNode) == RemoteNode->InputFlowNodeLinks.end()) {
+
+									SPDLOG_ERROR("Node {}, does not properly corss reference {}",
+										static_cast<const void*>(RemoteNode),
+										static_cast<const void*>(TraversalNode));
+									++ViolationCount;
+								}
+						};
+
+						// Check my nodes reference and cross verify with input list
+						if (TraversalNode->NonBranchingLeftNode)
+							NodeXrefCheck(TraversalNode->NonBranchingLeftNode);
+						for (auto RemoteNode : TraversalNode->BranchingOutRightNode)
+							NodeXrefCheck(RemoteNode);
+
+						return false;
+				});
+
+			return ViolationCount;
+		}
+
+
+		enum TreeTraversalMode { // Adding 2 of modulus 6 to each value of the enum will result in the next logical operation,
+								 // DO NOT MODIFY THE ORDER OF THESE ENUMS, IT WILL BREAK ANY ALOGRITHM RELYING ON THEM!
+			SEARCH_PREORDER_NLR,
+			SEARCH_INORDER_LNR,
+			SEARCH_POSTORDER_LRN,
+			SEARCH_REVERSE_PREORDER_NRL,
+			SEARCH_REVERSE_INORDER_RNL,
+			SEARCH_REVERSE_POSTORDER_RLN,
+		};
+		using NodeModifierCallback = bool(INOUT LlirBasicBlock*);
+		LlirBasicBlock* TraverseOrLocateNodeBySpecializedDFS(
+			TreeTraversalMode                   SearchMode,
+			std::function<NodeModifierCallback> CfgCallback
+		) {
+			TRACE_FUNCTION_PROTO;
+
+			// Check if we are running a nested traversal, this is due to the locking mechanism not using a stack for each node,
+			// this was done in order to aid with performance as a bit stack would allow nested traversal,
+			// but would require a repaint before or after each search, in order to keep track of visited nodes.
+			if (BFlags.TreeIsBeingTraversed)
+				throw SingularityException("Cannot traverse graph within a traversal process, nested traversal is not supported",
+					SingularityException::STATUS_NESTED_TRAVERSAL_DISALLOWED);
+			BFlags.TreeIsBeingTraversed = true;
+
+			// Search driver: call into recursive function and start the actual search, then handle errors,
+			RecursiveTraversalState TraversalStack{
+				.SelectedTraversalMode = SearchMode,
+				.SearchBindTag = ++RTLDFInitialSearchTagValue,
+				.NextCfgNode = InitialControlFlowGraphHead,
+				.CfgCallback = std::move(CfgCallback)
+			};
+			auto Result = RecursiveUnspecializedDFSearch(TraversalStack);
+			BFlags.TreeIsBeingTraversed = false;
+
+			switch (Result) {
+			case STATUS_RECURSIVE_OK:
+				return nullptr;
+			case STATUS_PREMATURE_RETURN:
+				return TraversalStack.ReturnTargetValue;
+			case STATUS_NULLPOINTER_CALL:
+			case STATUS_ALREADY_EXPLORED:
+				throw SingularityException("DFS cannot return null pointer call or already explored node, to the driver",
+					SingularityException::STATUS_DFS_INVALID_SEARCH_CALL);
+			default:
+				throw std::logic_error("DFS cannot return unsupported search result");
+			}
+		}
+		LlirBasicBlock* FindNodeContainingVirtualAddress(
+			IN       TreeTraversalMode SearchEvaluationMode,
+			IN const byte_t* VirtualAddress
+		) {
+			TRACE_FUNCTION_PROTO;
+
+			return TraverseOrLocateNodeBySpecializedDFS(
+				SearchEvaluationMode,
+				[VirtualAddress](
+					IN LlirBasicBlock* TraversalNode
+					) -> bool {
+						TRACE_FUNCTION_PROTO;
+
+						return TraversalNode->GetPhysicalNodeStartAddress() <= VirtualAddress
+							&& TraversalNode->GetPhysicalNodeEndAddress() > VirtualAddress;
+				});
+		}
+		LlirBasicBlock* FindNodeContainingVirtualAddressAndExclude(
+			IN       TreeTraversalMode         SearchEvaluationMode,
+			IN const byte_t* VirtualAddress,
+			IN       std::span<const LlirBasicBlock*> NodeExclusions
+		) {
+			TRACE_FUNCTION_PROTO;
+
+			return TraverseOrLocateNodeBySpecializedDFS(
+				SearchEvaluationMode,
+				[VirtualAddress, &NodeExclusions](
+					IN const LlirBasicBlock* TraversalNode
+					) -> bool {
+						TRACE_FUNCTION_PROTO;
+
+						if (std::find(NodeExclusions.begin(),
+							NodeExclusions.end(),
+							TraversalNode) != NodeExclusions.end())
+							return false;
+						return TraversalNode->GetPhysicalNodeStartAddress() <= VirtualAddress
+							&& TraversalNode->GetPhysicalNodeEndAddress() > VirtualAddress;
+				});
+		}
+
+	private:
+		LlirControlFlowGraph(
+			IN const IImageLoaderHelp& ImageMapping,
+			IN const FunctionAddress& FunctionLimits
+		)
+			: OwningImageMapping(ImageMapping),
+			FunctionLimits(FunctionLimits) {
+			TRACE_FUNCTION_PROTO;
+		}
+
+	#pragma region Graph treversal internal interfaces
+		struct RecursiveTraversalState {
+			IN  const TreeTraversalMode             SelectedTraversalMode;
+			IN  const uint32_t                      SearchBindTag;
+			IN        LlirBasicBlock* NextCfgNode;
+			IN  std::function<NodeModifierCallback> CfgCallback;
+			OUT LlirBasicBlock* ReturnTargetValue;
+		};
+		enum RecursiveDescentStatus {
+			STATUS_RECURSIVE_OK = 0,
+
+			STATUS_PREMATURE_RETURN,
+			STATUS_NULLPOINTER_CALL,
+			STATUS_ALREADY_EXPLORED
+		};
+		RecursiveDescentStatus RecursiveUnspecializedDFSearch(
+			INOUT RecursiveTraversalState& SearchTraversalStack
+		) {
+			TRACE_FUNCTION_PROTO;
+
+			// Checkout stack arguments, the function may internally call with nullptr cause it makes the rest of the code easy 
+			if (!SearchTraversalStack.NextCfgNode)
+				return STATUS_NULLPOINTER_CALL;
+
+			// Get the node for the current frame and check if it was already explored
+			auto SelectedNodeForFrame = SearchTraversalStack.NextCfgNode;
+			if (SelectedNodeForFrame->NodeDFSearchTag == SearchTraversalStack.SearchBindTag)
+				return STATUS_ALREADY_EXPLORED;
+			SelectedNodeForFrame->NodeDFSearchTag = SearchTraversalStack.SearchBindTag;
+
+			// Traverse transformation loop, this is a cursed common increment chain based on the values of the enum
+			for (auto i = 0; i < 6; i += 2)
+				switch ((SearchTraversalStack.SelectedTraversalMode + i) % 6) {
+				case SEARCH_REVERSE_PREORDER_NRL:
+				case SEARCH_PREORDER_NLR:
+					if (SearchTraversalStack.CfgCallback(
+						SelectedNodeForFrame)) {
+
+						SearchTraversalStack.ReturnTargetValue = SelectedNodeForFrame;
+						SPDLOG_DEBUG("Found CFG-Node {} for request",
+							static_cast<void*>(SelectedNodeForFrame));
+						return STATUS_PREMATURE_RETURN;
+					}
+					break;
+
+				case SEARCH_POSTORDER_LRN:
+				case SEARCH_INORDER_LNR:
+					SearchTraversalStack.NextCfgNode = SelectedNodeForFrame->NonBranchingLeftNode;
+					if (RecursiveUnspecializedDFSearch(SearchTraversalStack) == STATUS_PREMATURE_RETURN)
+						return STATUS_PREMATURE_RETURN;
+					break;
+
+				case SEARCH_REVERSE_POSTORDER_RLN:
+				case SEARCH_REVERSE_INORDER_RNL:
+					for (auto NodeEntry : SelectedNodeForFrame->BranchingOutRightNode) {
+
+						SearchTraversalStack.NextCfgNode = NodeEntry;
+						if (RecursiveUnspecializedDFSearch(SearchTraversalStack) == STATUS_PREMATURE_RETURN)
+							return STATUS_PREMATURE_RETURN;
+					}
+				}
+
+			return STATUS_RECURSIVE_OK;
+		}
+	#pragma endregion
+
+
+		const IImageLoaderHelp& OwningImageMapping;
+		const FunctionAddress   FunctionLimits;
+
+		LlirBasicBlock* InitialControlFlowGraphHead = nullptr;
+		CfgFlagsUnion   BFlags{};
+		uint32_t        RTLDFInitialSearchTagValue{};
+
+		Llir3acOperandSymbolRegistry Llir3acOperandRegistry;
+		uint32_t                     NextSymbolAllocator = -1;
+	};
+
+
+
+
+
+
+
+
+
+#if 0
+
+
+	
+	
+
+
+#pragma region LLIR_3ac_major_ir_format_implementation
+	
+	union LlirLogicalFlag {
+		enum FlagActionType {
+			LLIR_FLAG_SET = 0,
+			LLIR_FLAG_RESET,
+			LLIR_FLAG_WRITE,
+			LLIR_FLAG_TEST,
+		} FlagAction;
+		enum FlagFieldType {
+			LLIR_FLAG_NOT_IMPLEMENTED = 0,
+			LLIR_FLAG_CARRY,
+			LLIR_FLAG_AUXILARRY_CARRY,
+			LLIR_FLAG_PARITY_BIT,
+			LLIR_FLAG_ZERO,
+			LLIR_FLAG_SIGNED,
+			LLIR_FLAG_OVERFLOW,
+		} FlagField;
+	};
 
 	// Second level component of the cfg, contains all the necessary metadata
 	// as well as the logical code, as a polymorphic type
@@ -224,13 +569,7 @@ export namespace sof {
 			IN LlirBasicBlock&   OwningBasicBlock,
 			IN LlirLocalSymbol&& UniqueIdentifier,
 			IN uint32_t		     StatementGroupId
-		)
-			: ICfgInstruction(std::move(UniqueIdentifier),
-				ICfgInstruction::TYPE_AMD64_LIFTED),
-			  OwningBasicBlock(OwningBasicBlock),
-			  StatementGroupId(StatementGroupId) {
-			TRACE_FUNCTION_PROTO;
-		}
+		);
 
 		const LlirBasicBlock& OwningBasicBlock;
 		const uint32_t        StatementGroupId;
@@ -259,35 +598,7 @@ export namespace sof {
 
 
 
-	class Llir3acOperandSymbolRegistry
-		: private std::vector<Llir3acOperand> {
-		using vector_t = std::vector<Llir3acOperand>;
-	public:
-		Llir3acOperand& Allocate3acOperandEnlist() {
-			TRACE_FUNCTION_PROTO; return this->emplace_back();
-		}
-
-		Llir3acOperand* LocateAndRetrieve3acOperandForSymbol(
-			IN const LlirLocalSymbol& UniqueIdentifier
-		) {
-			TRACE_FUNCTION_PROTO;
-			auto OperandIterator = std::find_if(this->begin(),
-				this->end(),
-				[&UniqueIdentifier](
-					IN const value_type& OperandRegistryEntry
-					) -> bool {
-						TRACE_FUNCTION_PROTO; return OperandRegistryEntry.CompareUniqueIdentifier(UniqueIdentifier);
-				});
-			return OperandIterator == this->end() ? nullptr : &*OperandIterator;
-		}
-
-		using vector_t::begin;
-		using vector_t::cbegin;
-		using vector_t::end;
-		using vector_t::cend;
-		using vector_t::front;
-		using vector_t::back;
-	};
+	
 
 	// Describes a cfg's node, a core subcontainer of the whole cfg
 	class LlirBasicBlock :
@@ -523,284 +834,28 @@ export namespace sof {
 		std::vector<LlirBasicBlock*> BranchingOutRightNode{};
 	};
 
-	// The projects core component, this is the intermediate representation format the engine translates code into.
-	// This representation can be used to transform and modify, adding and removing inclusive, the code loaded.
-	// The IR is optimized for taking form compatible to x86-64 assembly code and being expendable to allow 
-	// other modules to add functionality to it in order to work with it more easily, this is just the base work done.
-	// This IR takes the form of a control flow graph (cfg).
-	class LlirControlFlowGraph {
-		friend class LlirBasicBlock;
-		friend class CfgGenerator;
-	public:
-		union CfgFlagsUnion {
-			uint8_t FlatFlags;
-			struct {
-				uint8_t ContainsIncompletePaths : 1; // Set to indicate that a node contained was not fully resolved
-	
-				// Internal BFlags
-				uint8_t ReservedCfgFlags        : 6; // Reserved flags (for completions sake)
-				uint8_t TreeIsBeingTraversed    : 1; // Indicates that the graph is currently being traversed, 
-													 // this flag is used to check for invocation of another traversal, 
-													 // as due to the locking system nested traversals aren't possible.
-			};
-		};
-		
-		~LlirControlFlowGraph() {
-			TRACE_FUNCTION_PROTO;
+	Llir3AddressCode::Llir3AddressCode(
+		IN LlirBasicBlock& OwningBasicBlock,
+		IN LlirLocalSymbol&& UniqueIdentifier,
+		IN uint32_t		     StatementGroupId
+	)
+		: ICfgInstruction(std::move(UniqueIdentifier),
+			ICfgInstruction::TYPE_AMD64_LIFTED),
+		OwningBasicBlock(OwningBasicBlock),
+		StatementGroupId(StatementGroupId),
+		TargetOperand(OwningBasicBlock.OwningCfgContainer),
+		SourceOperands{
+		OwningBasicBlock.OwningCfgContainer,
+		OwningBasicBlock.OwningCfgContainer
+	} {
+		TRACE_FUNCTION_PROTO;
+	}
 
-			std::vector<LlirBasicBlock*> Deleteables;
-			TraverseOrLocateNodeBySpecializedDFS(SEARCH_PREORDER_NLR,
-				[&Deleteables](
-					IN LlirBasicBlock* BlockOfCfg
-					) -> bool {
-						TRACE_FUNCTION_PROTO;
-						Deleteables.push_back(BlockOfCfg);
-						return false;
-				});
-			for (auto Deletable : Deleteables)
-				delete Deletable;
-			SPDLOG_INFO("Released " ESC_BRIGHTCYAN"{}" ESC_RESET" blocks from cfg " ESC_BRIGHTRED"{}",
-				Deleteables.size(),
-				static_cast<void*>(this));
-		}
 
-		LlirLocalSymbol GenNextSymbolIdentifier() {
-			TRACE_FUNCTION_PROTO;
-			return LlirLocalSymbol(*this,
-				++NextSymbolAllocator);
-		}
-		LlirBasicBlock* AllocateFloatingCfgNode() {
-			TRACE_FUNCTION_PROTO;
-	
-			// The returned object is not managed, also doesnt have to be,
-			// allocation is inaccessible from outside of CfgGenerator anyways.
-			LlirBasicBlock* FloatingNode = new LlirBasicBlock(*this,
-				std::move(GenNextSymbolIdentifier()));
-			if (!InitialControlFlowGraphHead)
-				InitialControlFlowGraphHead = FloatingNode;
-			return FloatingNode;
-		}
-	
-		LlirBasicBlock* GetInitialCfgNode() {
-			TRACE_FUNCTION_PROTO; return InitialControlFlowGraphHead;
-		}
-	
-	
-		uint32_t ValidateCfgOverCrossReferences() { // This function validates the graph by walking over every single entry
-													// and checking its cross references, and returns the number of violations
-													// NOTE: this function is not efficient and should not be called in hot code paths
-			TRACE_FUNCTION_PROTO;
-	
-			uint32_t ViolationCount{};
-			TraverseOrLocateNodeBySpecializedDFS(SEARCH_PREORDER_NLR,
-				[&ViolationCount](
-					IN const LlirBasicBlock* TraversalNode
-					) -> bool {
-						TRACE_FUNCTION_PROTO;
-	
-						auto NodeXrefCheck = [&ViolationCount, TraversalNode](
-							IN const LlirBasicBlock* RemoteNode
-							) -> void {
-								TRACE_FUNCTION_PROTO;
-	
-								if (std::find(RemoteNode->InputFlowNodeLinks.begin(),
-									RemoteNode->InputFlowNodeLinks.end(),
-									TraversalNode) == RemoteNode->InputFlowNodeLinks.end()) {
-	
-									SPDLOG_ERROR("Node {}, does not properly corss reference {}",
-										static_cast<const void*>(RemoteNode),
-										static_cast<const void*>(TraversalNode));
-									++ViolationCount;
-								}
-						};
-	
-						// Check my nodes reference and cross verify with input list
-						if (TraversalNode->NonBranchingLeftNode)
-							NodeXrefCheck(TraversalNode->NonBranchingLeftNode);
-						for (auto RemoteNode : TraversalNode->BranchingOutRightNode)
-							NodeXrefCheck(RemoteNode);
-	
-						return false;
-				});
-	
-			return ViolationCount;
-		}
-	
-	
-		enum TreeTraversalMode { // Adding 2 of modulus 6 to each value of the enum will result in the next logical operation,
-								 // DO NOT MODIFY THE ORDER OF THESE ENUMS, IT WILL BREAK ANY ALOGRITHM RELYING ON THEM!
-			SEARCH_PREORDER_NLR,
-			SEARCH_INORDER_LNR,
-			SEARCH_POSTORDER_LRN,
-			SEARCH_REVERSE_PREORDER_NRL,
-			SEARCH_REVERSE_INORDER_RNL,
-			SEARCH_REVERSE_POSTORDER_RLN,
-		};
-		using NodeModifierCallback = bool(INOUT LlirBasicBlock*);
-		LlirBasicBlock* TraverseOrLocateNodeBySpecializedDFS(
-			TreeTraversalMode                   SearchMode,
-			std::function<NodeModifierCallback> CfgCallback
-		) {
-			TRACE_FUNCTION_PROTO;
-	
-			// Check if we are running a nested traversal, this is due to the locking mechanism not using a stack for each node,
-			// this was done in order to aid with performance as a bit stack would allow nested traversal,
-			// but would require a repaint before or after each search, in order to keep track of visited nodes.
-			if (BFlags.TreeIsBeingTraversed)
-				throw SingularityException("Cannot traverse graph within a traversal process, nested traversal is not supported",
-					SingularityException::STATUS_NESTED_TRAVERSAL_DISALLOWED);
-			BFlags.TreeIsBeingTraversed = true;
-	
-			// Search driver: call into recursive function and start the actual search, then handle errors,
-			RecursiveTraversalState TraversalStack{
-				.SelectedTraversalMode = SearchMode,
-				.SearchBindTag = ++RTLDFInitialSearchTagValue,
-				.NextCfgNode = InitialControlFlowGraphHead,
-				.CfgCallback = std::move(CfgCallback)
-			};
-			auto Result = RecursiveUnspecializedDFSearch(TraversalStack);
-			BFlags.TreeIsBeingTraversed = false;
-	
-			switch (Result) {
-			case STATUS_RECURSIVE_OK:
-				return nullptr;
-			case STATUS_PREMATURE_RETURN:
-				return TraversalStack.ReturnTargetValue;
-			case STATUS_NULLPOINTER_CALL:
-			case STATUS_ALREADY_EXPLORED:
-				throw SingularityException("DFS cannot return null pointer call or already explored node, to the driver",
-					SingularityException::STATUS_DFS_INVALID_SEARCH_CALL);
-			default:
-				throw std::logic_error("DFS cannot return unsupported search result");
-			}
-		}
-		LlirBasicBlock* FindNodeContainingVirtualAddress(
-			IN       TreeTraversalMode SearchEvaluationMode,
-			IN const byte_t*           VirtualAddress
-		) {
-			TRACE_FUNCTION_PROTO;
-	
-			return TraverseOrLocateNodeBySpecializedDFS(
-				SearchEvaluationMode,
-				[VirtualAddress](
-					IN LlirBasicBlock* TraversalNode
-					) -> bool {
-						TRACE_FUNCTION_PROTO;
-	
-						return TraversalNode->GetPhysicalNodeStartAddress() <= VirtualAddress
-							&& TraversalNode->GetPhysicalNodeEndAddress() > VirtualAddress;
-				});
-		}
-		LlirBasicBlock* FindNodeContainingVirtualAddressAndExclude(
-			IN       TreeTraversalMode         SearchEvaluationMode,
-			IN const byte_t* VirtualAddress,
-			IN       std::span<const LlirBasicBlock*> NodeExclusions
-		) {
-			TRACE_FUNCTION_PROTO;
-	
-			return TraverseOrLocateNodeBySpecializedDFS(
-				SearchEvaluationMode,
-				[VirtualAddress, &NodeExclusions](
-					IN const LlirBasicBlock* TraversalNode
-					) -> bool {
-						TRACE_FUNCTION_PROTO;
-	
-						if (std::find(NodeExclusions.begin(),
-							NodeExclusions.end(),
-							TraversalNode) != NodeExclusions.end())
-							return false;
-						return TraversalNode->GetPhysicalNodeStartAddress() <= VirtualAddress
-							&& TraversalNode->GetPhysicalNodeEndAddress() > VirtualAddress;
-				});
-		}
-	
-	private:
-		LlirControlFlowGraph(
-			IN const IImageLoaderHelp& ImageMapping,
-			IN const FunctionAddress&  FunctionLimits
-		)
-			: OwningImageMapping(ImageMapping),
-			  FunctionLimits(FunctionLimits) {
-			TRACE_FUNCTION_PROTO;
-		}
-	
-	#pragma region Graph treversal internal interfaces
-		struct RecursiveTraversalState {
-			IN  const TreeTraversalMode             SelectedTraversalMode;
-			IN  const uint32_t                      SearchBindTag;
-			IN        LlirBasicBlock*               NextCfgNode;
-			IN  std::function<NodeModifierCallback> CfgCallback;
-			OUT LlirBasicBlock*                     ReturnTargetValue;
-		};
-		enum RecursiveDescentStatus {
-			STATUS_RECURSIVE_OK = 0,
-	
-			STATUS_PREMATURE_RETURN,
-			STATUS_NULLPOINTER_CALL,
-			STATUS_ALREADY_EXPLORED
-		};
-		RecursiveDescentStatus RecursiveUnspecializedDFSearch(
-			INOUT RecursiveTraversalState& SearchTraversalStack
-		) {
-			TRACE_FUNCTION_PROTO;
-	
-			// Checkout stack arguments, the function may internally call with nullptr cause it makes the rest of the code easy 
-			if (!SearchTraversalStack.NextCfgNode)
-				return STATUS_NULLPOINTER_CALL;
-	
-			// Get the node for the current frame and check if it was already explored
-			auto SelectedNodeForFrame = SearchTraversalStack.NextCfgNode;
-			if (SelectedNodeForFrame->NodeDFSearchTag == SearchTraversalStack.SearchBindTag)
-				return STATUS_ALREADY_EXPLORED;
-			SelectedNodeForFrame->NodeDFSearchTag = SearchTraversalStack.SearchBindTag;
-	
-			// Traverse transformation loop, this is a cursed common increment chain based on the values of the enum
-			for (auto i = 0; i < 6; i += 2)
-				switch ((SearchTraversalStack.SelectedTraversalMode + i) % 6) {
-				case SEARCH_REVERSE_PREORDER_NRL:
-				case SEARCH_PREORDER_NLR:
-					if (SearchTraversalStack.CfgCallback(
-						SelectedNodeForFrame)) {
-	
-						SearchTraversalStack.ReturnTargetValue = SelectedNodeForFrame;
-						SPDLOG_DEBUG("Found CFG-Node {} for request",
-							static_cast<void*>(SelectedNodeForFrame));
-						return STATUS_PREMATURE_RETURN;
-					}
-					break;
-	
-				case SEARCH_POSTORDER_LRN:
-				case SEARCH_INORDER_LNR:
-					SearchTraversalStack.NextCfgNode = SelectedNodeForFrame->NonBranchingLeftNode;
-					if (RecursiveUnspecializedDFSearch(SearchTraversalStack) == STATUS_PREMATURE_RETURN)
-						return STATUS_PREMATURE_RETURN;
-					break;
-	
-				case SEARCH_REVERSE_POSTORDER_RLN:
-				case SEARCH_REVERSE_INORDER_RNL:
-					for (auto NodeEntry : SelectedNodeForFrame->BranchingOutRightNode) {
-	
-						SearchTraversalStack.NextCfgNode = NodeEntry;
-						if (RecursiveUnspecializedDFSearch(SearchTraversalStack) == STATUS_PREMATURE_RETURN)
-							return STATUS_PREMATURE_RETURN;
-					}
-				}
-	
-			return STATUS_RECURSIVE_OK;
-		}
-	#pragma endregion
-	
-	
-		const IImageLoaderHelp& OwningImageMapping;
-		const FunctionAddress   FunctionLimits;
-	
-		LlirBasicBlock* InitialControlFlowGraphHead = nullptr;
-		CfgFlagsUnion   BFlags{};
-		uint32_t        RTLDFInitialSearchTagValue{};
 
-		Llir3acOperandSymbolRegistry Llir3acOperandRegistry;
-		uint32_t                     NextSymbolAllocator = -1;
-	};
+
+	
+#endif
 
 
 }
