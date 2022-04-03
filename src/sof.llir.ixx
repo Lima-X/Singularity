@@ -54,142 +54,68 @@ import sof.image.load;
 // Each graph owns a registry for symbols, said symbols are used to abstarct logic in the 3ac representation.
 //
 
-
-
-
-
-
-
 export namespace sof {
 
-	class LlirSymbolObject {
-		friend class LlirGlobalSymbol;
-		friend class LlirLocalSymbol;
-	public:
-		
-		LlirSymbolObject(IN LlirSymbolObject&&) = default;
-		LlirSymbolObject& operator=(IN LlirSymbolObject&&) = default;
-
-
-		bool CompareUniqueIdentifier(
-			IN const LlirSymbolObject& OtherUniqueIdentifier
-		) const {
-			TRACE_FUNCTION_PROTO; return UniqueIdentifier == OtherUniqueIdentifier.UniqueIdentifier;
-		}
-		static bool CompareUniqueIdentifier(
-			IN const LlirSymbolObject& FirstUniqueIdentifier,
-			IN const LlirSymbolObject& SecondUniqueIdentifier
-		) {
-			TRACE_FUNCTION_PROTO; return FirstUniqueIdentifier.UniqueIdentifier == SecondUniqueIdentifier.UniqueIdentifier;
-		}
-
-		const uint32_t UniqueIdentifier;
-
-	protected:
-		LlirSymbolObject(
-			IN uint32_t UniqueIdentifier
-		)
-			: UniqueIdentifier(UniqueIdentifier) {
-			TRACE_FUNCTION_PROTO;
-		}
-	};
-
-	// Describes a global symbol that is used to identify functions, globals, relocations, and others
-	class LlirGlobalSymbol
-		: public LlirSymbolObject {};
-
-	// Symbol identifier for cfg local lookup, a symbol may only be allocated through the cfg itself
-	// cannot me copied but only moved, and is associated to a specific cfg,
-	// it may not be transfered to any other cfg without translation
-	class LlirControlFlowGraph;
-	class LlirLocalSymbol
-		: public LlirSymbolObject {
-		friend class Llir3acOperandSymbolRegistry;
-		friend class Llir3AddressCode;
-		friend class LlirControlfFlowGraph;
-		friend class LlirBasicBlock;
-		friend class Llir3acOperand;
-	public:
-		LlirLocalSymbol(
-			// IN LlirControlFlowGraph& OwningCfgContext
-		)
-			: LlirSymbolObject(0)//,
-			/* OwningCfgContext(OwningCfgContext) */ {
-			TRACE_FUNCTION_PROTO;
-		}
-
-	private:
-		LlirLocalSymbol(
-			// IN LlirControlFlowGraph& OwningCfgContext,
-			IN uint32_t              UniqueIdentifier
-		)
-			: LlirSymbolObject(UniqueIdentifier)//,
-			/* OwningCfgContext(OwningCfgContext) */ {
-			TRACE_FUNCTION_PROTO;
-		}
-
-		// LlirControlFlowGraph& OwningCfgContext;
-	};
-
-
 	// A polymorphic base type stored as a list in cfg nodes used to identify the and define abstractions
-	class ICfgInstruction
-		: public LlirLocalSymbol {
+	class ICfgInstruction {
+		friend class LlirAmd64NativeEncoded;
+		friend class Llir3AddressCode;
 	public:
 		enum CfgStatementType : int8_t {
 			TYPE_PURE_NATIVE,
 			TYPE_AMD64_LIFTED,
 		};
 
-		ICfgInstruction(
-			IN LlirLocalSymbol&& UniqueIdentifier,
-			IN CfgStatementType  TypeOfStatement
-		)
-			: LlirLocalSymbol(std::move(UniqueIdentifier)),
-			TypeOfStatement(TypeOfStatement) {
-			TRACE_FUNCTION_PROTO;
-		}
 		virtual ~ICfgInstruction() {
 			TRACE_FUNCTION_PROTO;
 		}
-
 		ICfgInstruction(IN const ICfgInstruction&) = delete;
 		ICfgInstruction& operator=(IN const ICfgInstruction&) = delete;
 
+		virtual byte_t* GetUniquePhysicalAddress() const = 0;
+
 		const CfgStatementType TypeOfStatement;
+
+	private:
+		ICfgInstruction(
+			IN CfgStatementType TypeOfStatement
+		)
+			: TypeOfStatement(TypeOfStatement) {
+			TRACE_FUNCTION_PROTO;
+		}
 	};
-
-
-
 
 	// Basic native encoding container for xed to store its data in
 	class LlirAmd64NativeEncoded
 		: public ICfgInstruction {
 	public:
-		LlirAmd64NativeEncoded(
-			IN LlirLocalSymbol&& UniqueIdentifier
-		)
-			: ICfgInstruction(std::move(UniqueIdentifier),
-				ICfgInstruction::TYPE_PURE_NATIVE) {
+		LlirAmd64NativeEncoded()
+			: ICfgInstruction(ICfgInstruction::TYPE_PURE_NATIVE) {
 			TRACE_FUNCTION_PROTO;
 		}
 
+		byte_t* GetUniquePhysicalAddress() const override {
+			TRACE_FUNCTION_PROTO;
+			return reinterpret_cast<byte_t*>(
+				xed_decoded_inst_get_user_data(const_cast<xed_decoded_inst_t*>(
+					&DecodedInstruction)));
+		}
+
 		xed_decoded_inst_t DecodedInstruction;
-		byte_t* OriginalAddress;
+		byte_t*            PhysicalVirtualAddress;
 	};
 
-
-
 #pragma region LlirOperandRegistrationSystem
-	class Llir3acOperand
-		: public LlirLocalSymbol {
+	class Llir3acOperand {
 	public:
 		Llir3acOperand(
 			IN uint32_t UniqueIdentifier
 		)
-			: LlirLocalSymbol(UniqueIdentifier) {
+			: UniqueIdentifier(UniqueIdentifier) {
 			TRACE_FUNCTION_PROTO;
 		}
+
+		const uint32_t UniqueIdentifier;
 
 		enum OperandWidthType : int8_t {
 			OPERAND_UNSIGNED_64_BIT,
@@ -205,13 +131,13 @@ export namespace sof {
 		} OperandWidth;
 
 		enum OperandTypeType : int8_t {
-			OPERAND_NATIVE_REGISTER,
 			OPERAND_VIRTUAL_REGISTER,
 			OPERAND_STACK_LOCATION,
 			OPERAND_MEMORY_LOCATION,
 			OPERAND_IS_CONSTANT,
 			OPERAND_LOGICAL_FLAGS,
 		} OperandType;
+
 		union {
 			int64_t  StackLocationOffset;   // OPERAND_STACK_LOCATION
 			uint64_t MemoryLocation;	    // OPERAND_MEMORY_LOCATION
@@ -219,40 +145,41 @@ export namespace sof {
 		};
 	};
 
+	class LlirControlFlowGraph;
 	class Llir3acOperandSymbolRegistry
 		: private std::vector<Llir3acOperand> {
 		using vector_t = std::vector<Llir3acOperand>;
 	public:
+		Llir3acOperandSymbolRegistry(
+			IN LlirControlFlowGraph& OwningCfgContext
+		)
+			: OwningCfgContext(OwningCfgContext) {
+			TRACE_FUNCTION_PROTO;
+		}
+
 		Llir3acOperand& Allocate3acOperandEnlist() {
-			TRACE_FUNCTION_PROTO; return this->emplace_back();
+			TRACE_FUNCTION_PROTO; return this->emplace_back(++NextSymbolAllocator);
 		}
 
 		Llir3acOperand* LocateAndRetrieve3acOperandForSymbol(
-			IN const LlirLocalSymbol& UniqueIdentifier
+			IN uint32_t UniqueIdentifier
 		) {
 			TRACE_FUNCTION_PROTO;
 			auto OperandIterator = std::find_if(this->begin(),
 				this->end(),
-				[&UniqueIdentifier](
+				[UniqueIdentifier](
 					IN const value_type& OperandRegistryEntry
 					) -> bool {
-						TRACE_FUNCTION_PROTO; return OperandRegistryEntry.CompareUniqueIdentifier(UniqueIdentifier);
+						TRACE_FUNCTION_PROTO; return OperandRegistryEntry.UniqueIdentifier == UniqueIdentifier;
 				});
 			return OperandIterator == this->end() ? nullptr : &*OperandIterator;
 		}
 
-		using vector_t::begin;
-		using vector_t::cbegin;
-		using vector_t::end;
-		using vector_t::cend;
-		using vector_t::front;
-		using vector_t::back;
-
 	private:
 		LlirControlFlowGraph& OwningCfgContext;
+		uint32_t              NextSymbolAllocator = -1;
 	};
 #pragma endregion
-
 
 	union LlirLogicalFlag {
 		enum FlagActionType {
@@ -261,6 +188,7 @@ export namespace sof {
 			LLIR_FLAG_WRITE,
 			LLIR_FLAG_TEST,
 		} FlagAction;
+
 		enum FlagFieldType {
 			LLIR_FLAG_NOT_IMPLEMENTED = 0,
 			LLIR_FLAG_CARRY,
@@ -302,8 +230,7 @@ export namespace sof {
 
 		Llir3AddressCode(
 			IN LlirBasicBlock& OwningBasicBlock,
-			IN LlirLocalSymbol&& UniqueIdentifier,
-			IN uint32_t		     StatementGroupId
+			IN uint32_t		   StatementGroupId
 		);
 
 		const LlirBasicBlock& OwningBasicBlock;
@@ -317,7 +244,7 @@ export namespace sof {
 			OPERAND_SOURCE_ONE,
 			OPERAND_SOURCE_TWO,
 		};
-		LlirLocalSymbol SourceOperands[3];
+		uint32_t SourceOperands[3];
 
 		LlirAmd64NativeEncoded* GetOptionalInitialEncoding() const {
 			TRACE_FUNCTION_PROTO; return OptionalInitialNative.get();
@@ -333,8 +260,7 @@ export namespace sof {
 
 	// Describes a cfg's node, a core subcontainer of the whole cfg
 	class LlirBasicBlock :
-		protected std::vector<std::unique_ptr<ICfgInstruction>>,
-		public LlirLocalSymbol {
+		protected std::vector<std::unique_ptr<ICfgInstruction>> {
 		friend LlirControlFlowGraph;
 		friend class CfgGenerator;
 	public:
@@ -375,23 +301,19 @@ export namespace sof {
 
 
 		bool TrySpliceOfHeadAtAddressForInsert2(
-			IN const LlirLocalSymbol& UidOfEntryToSplice
+			IN void* UidOfEntryToSplice
 		);
 		bool TrySpliceOfHeadAtAddressForInsert(       // Tries to splice of the node head at specified address and rebinds,
 													  // returns true if successful or false if address was not found.
 													  // Could also splice of the bottom but that would be even more work
 			IN byte_t* OriginalAddressOfEntryToSplice // The physical address of the decode contained to splice the node at
 		) {
-			TRACE_FUNCTION_PROTO;
-
-			throw std::runtime_error("THIS IS NO LONGER IMPLEMENTED");
+			TRACE_FUNCTION_PROTO; throw std::runtime_error("THIS IS NO LONGER IMPLEMENTED");
 		}
 
 
 		void TerminateThisNodeAsCfgExit() {
-			TRACE_FUNCTION_PROTO;
-
-			CFlags.NodeTerminatesPath = true;
+			TRACE_FUNCTION_PROTO; CFlags.NodeTerminatesPath = true;
 		}
 		void SetNodeIsIncomplete();
 
@@ -431,66 +353,40 @@ export namespace sof {
 			TRACE_FUNCTION_PROTO; return CFlags;
 		}
 		byte_t* GetPhysicalNodeStartAddress() const {
-			TRACE_FUNCTION_PROTO;
-
-			// The first node, even in lifted state must have a native encoding associated
-
-			switch (front()->TypeOfStatement) {
-			case ICfgInstruction::TYPE_PURE_NATIVE:
-				return static_cast<const LlirAmd64NativeEncoded*>(front().get())->OriginalAddress;
-			case ICfgInstruction::TYPE_AMD64_LIFTED:
-				return static_cast<const Llir3AddressCode*>(front().get())->GetOptionalInitialEncoding()->OriginalAddress;
-			default:
-				throw SingularityException(SingularityException::STATUS_ICFGE_TYPE_NOT_REGISTERED,
-					"The ICFGE {} of type {} is not supported",
-					UniqueIdentifier,
-					front()->TypeOfStatement);
-			}
+			TRACE_FUNCTION_PROTO; return this->front()->GetUniquePhysicalAddress();
 		}
-	#if 0
 		byte_t* GetPhysicalNodeEndAddress() const { // End address includes the size of the instruction, 
 													// therefore point to the next instruction after this node
 			TRACE_FUNCTION_PROTO;
 
-			for (auto& SelectedBlock : std::views::reverse(*this))
+			for (auto& SelectedBlock : *static_cast<const type_t*>(this) | std::views::reverse)
 				switch (SelectedBlock->TypeOfStatement) {
-				case ICfgInstruction::TYPE_PURE_NATIVE:
-				{
+				case ICfgInstruction::TYPE_PURE_NATIVE: {
 
 					auto& NativeInstruction = static_cast<LlirAmd64NativeEncoded&>(*SelectedBlock);
 					auto InstructionLength = xed_decoded_inst_get_length(&NativeInstruction.DecodedInstruction);
-					return NativeInstruction.OriginalAddress * InstructionLength;
+					return NativeInstruction.GetUniquePhysicalAddress() + InstructionLength;
 				}
-				case ICfgInstruction::TYPE_AMD64_LIFTED:
-				{
+				case ICfgInstruction::TYPE_AMD64_LIFTED: {
 
 					// Search for the next node that that has a native encoding associated
 					auto& Lifted3acCode = static_cast<Llir3AddressCode&>(*SelectedBlock);
-					if (!Lifted3acCode.OptionalInitialNative)
+					if (!Lifted3acCode.GetOptionalInitialEncoding())
 						break;
-					auto InstructionLength = xed_decoded_inst_get_length(&Lifted3acCode.OptionalInitialNative->DecodedInstruction);
-					return Lifted3acCode.OptionalInitialNative->OriginalAddress * InstructionLength;
-				} break;
-
-				default:
-					throw SingularityException(SingularityException::STATUS_ICFGE_TYPE_NOT_REGISTERED,
-						"The ICFGE {} of type {} is not supported",
-						UniqueIdentifier,
-						SelectedBlock->TypeOfStatement);
-				}
+					auto InstructionLength = xed_decoded_inst_get_length(
+						&Lifted3acCode.GetOptionalInitialEncoding()->DecodedInstruction);
+					return Lifted3acCode.GetOptionalInitialEncoding()->GetUniquePhysicalAddress()
+						+ InstructionLength;
+				}}
 
 			return nullptr;
 		}
-	#endif
 
 	private:
 		LlirBasicBlock(
-			IN LlirControlFlowGraph& OwningCfgContainer,
-			IN uint32_t              UniqueIdentifier
+			IN LlirControlFlowGraph& OwningCfgContainer
 		)
-			: OwningCfgContainer(OwningCfgContainer),
-			LlirLocalSymbol(//OwningCfgContainer,
-				UniqueIdentifier) {
+			: OwningCfgContainer(OwningCfgContainer) {
 			TRACE_FUNCTION_PROTO;
 		}
 
@@ -517,14 +413,12 @@ export namespace sof {
 
 	Llir3AddressCode::Llir3AddressCode(
 		IN LlirBasicBlock& OwningBasicBlock,
-		IN LlirLocalSymbol&& UniqueIdentifier,
-		IN uint32_t		     StatementGroupId
+		IN uint32_t		   StatementGroupId
 	)
-		: ICfgInstruction(std::move(UniqueIdentifier),
-			ICfgInstruction::TYPE_AMD64_LIFTED),
-		OwningBasicBlock(OwningBasicBlock),
-		StatementGroupId(StatementGroupId),
-		SourceOperands{0, 0, 0} {
+		: ICfgInstruction(ICfgInstruction::TYPE_AMD64_LIFTED),
+		  OwningBasicBlock(OwningBasicBlock),
+		  StatementGroupId(StatementGroupId),
+		  SourceOperands{0, 0, 0} {
 		TRACE_FUNCTION_PROTO;
 	}
 
@@ -556,7 +450,6 @@ export namespace sof {
 		~LlirControlFlowGraph() {
 			TRACE_FUNCTION_PROTO;
 
-#if 0
 			std::vector<LlirBasicBlock*> Deleteables;
 			TraverseOrLocateNodeBySpecializedDFS(SEARCH_PREORDER_NLR,
 				[&Deleteables](
@@ -571,7 +464,6 @@ export namespace sof {
 			SPDLOG_INFO("Released " ESC_BRIGHTCYAN"{}" ESC_RESET" blocks from cfg " ESC_BRIGHTRED"{}",
 				Deleteables.size(),
 				static_cast<void*>(this));
-#endif
 		}
 
 		LlirBasicBlock* AllocateFloatingCfgNode() {
@@ -579,8 +471,7 @@ export namespace sof {
 
 			// The returned object is not managed, also doesnt have to be,
 			// allocation is inaccessible from outside of CfgGenerator anyways.
-			LlirBasicBlock* FloatingNode = new LlirBasicBlock(*this,
-				++NextSymbolAllocator);
+			LlirBasicBlock* FloatingNode = new LlirBasicBlock(*this);
 			if (!InitialControlFlowGraphHead)
 				InitialControlFlowGraphHead = FloatingNode;
 			return FloatingNode;
@@ -589,8 +480,6 @@ export namespace sof {
 		LlirBasicBlock* GetInitialCfgNode() {
 			TRACE_FUNCTION_PROTO; return InitialControlFlowGraphHead;
 		}
-
-		#if 0
 
 		uint32_t ValidateCfgOverCrossReferences() { // This function validates the graph by walking over every single entry
 													// and checking its cross references, and returns the number of violations
@@ -719,26 +608,25 @@ export namespace sof {
 							&& TraversalNode->GetPhysicalNodeEndAddress() > VirtualAddress;
 				});
 		}
-#endif
 
 	private:
 		LlirControlFlowGraph(
 			IN const IImageLoaderHelp& ImageMapping,
-			IN const FunctionAddress& FunctionLimits
+			IN const FunctionAddress&  FunctionLimits
 		)
-			: OwningImageMapping(ImageMapping),
-			FunctionLimits(FunctionLimits) {
+			: Llir3acOperandRegistry(*this),
+			  OwningImageMapping(ImageMapping),
+			  FunctionLimits(FunctionLimits) {
 			TRACE_FUNCTION_PROTO;
 		}
 
-#if 0
 	#pragma region Graph treversal internal interfaces
 		struct RecursiveTraversalState {
 			IN  const TreeTraversalMode             SelectedTraversalMode;
 			IN  const uint32_t                      SearchBindTag;
-			IN        LlirBasicBlock* NextCfgNode;
+			IN        LlirBasicBlock*               NextCfgNode;
 			IN  std::function<NodeModifierCallback> CfgCallback;
-			OUT LlirBasicBlock* ReturnTargetValue;
+			OUT LlirBasicBlock*                     ReturnTargetValue;
 		};
 		enum RecursiveDescentStatus {
 			STATUS_RECURSIVE_OK = 0,
@@ -798,8 +686,6 @@ export namespace sof {
 		}
 	#pragma endregion
 
-#endif
-
 		const IImageLoaderHelp& OwningImageMapping;
 		const FunctionAddress   FunctionLimits;
 
@@ -808,22 +694,21 @@ export namespace sof {
 		uint32_t        RTLDFInitialSearchTagValue{};
 
 		Llir3acOperandSymbolRegistry Llir3acOperandRegistry;
-		uint32_t                     NextSymbolAllocator = -1;
 	};
 
 	bool LlirBasicBlock::TrySpliceOfHeadAtAddressForInsert2(
-		IN const LlirLocalSymbol& UidOfEntryToSplice
+		IN void* UidOfEntryToSplice
 	) {
 		TRACE_FUNCTION_PROTO;
 
 		// Find the iterator of the entry containing the splice address
 		auto SpliceIterator = std::find_if(this->begin(),
 			this->end(),
-			[&UidOfEntryToSplice](
-				IN const ICfgInstruction& CfgNodeEntry
+			[UidOfEntryToSplice](
+				IN const std::unique_ptr<ICfgInstruction>& CfgNodeEntry
 				) -> bool {
 					// TODO: INVALID, needs fixups, addresses shall not be used for identification purposes
-					TRACE_FUNCTION_PROTO; return CfgNodeEntry.CompareUniqueIdentifier(UidOfEntryToSplice);
+					TRACE_FUNCTION_PROTO; return CfgNodeEntry->GetUniquePhysicalAddress() == UidOfEntryToSplice;
 			});
 		if (SpliceIterator == this->end())
 			return false;
@@ -841,8 +726,8 @@ export namespace sof {
 		SplicedNodeHead->InputFlowNodeLinks = std::move(InputFlowNodeLinks);
 		InputFlowNodeLinks.push_back(SplicedNodeHead);
 		SplicedNodeHead->insert(SplicedNodeHead->begin(),
-			this->begin(),
-			SpliceIterator);
+			std::make_move_iterator(this->begin()),
+			std::make_move_iterator(SpliceIterator));
 		this->erase(this->begin(),
 			SpliceIterator);
 		SplicedNodeHead->NonBranchingLeftNode = this;
@@ -868,42 +753,7 @@ export namespace sof {
 		SPDLOG_WARN("CfgNode for rva{:x} was marked incomplete at +{:x}",
 			OwningCfgContainer.FunctionLimits.first -
 			OwningCfgContainer.OwningImageMapping.GetImageFileMapping(),
-			static_cast<LlirAmd64NativeEncoded*>(back().get())->OriginalAddress - // TODO: this is hardcoded for x86, may need to change this up in the future
+			static_cast<LlirAmd64NativeEncoded*>(back().get())->GetUniquePhysicalAddress() - // TODO: this is hardcoded for x86, may need to change this up in the future
 			OwningCfgContainer.OwningImageMapping.GetImageFileMapping());
 	}
-
-
-
-
-
-
-#if 0
-
-
-	
-	
-
-
-#pragma region LLIR_3ac_major_ir_format_implementation
-	
-	
-	
-
-#pragma endregion
-
-
-
-	
-
-	
-
-	
-
-
-
-
-	
-#endif
-
-
 }
