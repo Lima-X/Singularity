@@ -118,13 +118,13 @@ export namespace sof {
 	#pragma endregion
 
 		template<typename... Args>
-		explicit SingularityException(              
+		constexpr explicit SingularityException(              
 			IN       int32_t           ExceptionStatusCode,
 			IN const std::string_view& ExceptionText,
 			IN       Args&&...         FormatArguments
 		) noexcept
-			: ExceptionText(fmt::format(ExceptionText,
-				std::forward<Args>(FormatArguments)...)),
+			: ExceptionText(fmt::vformat(ExceptionText,
+				fmt::make_format_args(std::forward<Args>(FormatArguments)...))),
 			StatusCode(static_cast<ExceptionCode>(ExceptionStatusCode)) {
 			TRACE_FUNCTION_PROTO;
 		}
