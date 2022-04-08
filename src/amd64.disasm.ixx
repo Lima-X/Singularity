@@ -58,16 +58,16 @@ export namespace sof {
 	// it simply isn't really possible to decompile an image on a whole program level,
 	// at least not without writing millions of heuristics and special edge case handlers.
 	export class CfgGenerator {
-		struct DisasseblerEngineState {                       // Defines the pass down stack state for the recursive disassembly engine
-			IN LlirControlFlowGraph&     ControlFlowGraphContext; // Reference to the cfg used by the current engines stack   (passed down)
-			IN const FunctionAddress PredictedFunctionBounds; // Constants of the function frame itself, start and size   (passed down)		
-			IN IDisassemblerTracker& DataTracker;
+		struct DisasseblerEngineState {                             // Defines the pass down stack state for the recursive disassembly engine
+			IN       LlirControlFlowGraph& ControlFlowGraphContext; // Reference to the cfg used by the current engines stack   (passed down)
+			IN const FunctionAddress       PredictedFunctionBounds; // Constants of the function frame itself, start and size   (passed down)		
+			IN       IDisassemblerTracker& DataTracker;
 
 			struct NextScanAddress {
-				IN    byte_t*                     NextCodeScanAddress; // Virtual address for the next engine frame to disassemble (passed down)
-				IN    LlirControlFlowGraph::CfgNode*  PreviousNodeForLink; // A pointer to the callers node of its frame of the cfg    (passed down)
-																	   // The callee has to link itself into the passed node
-				INOUT LlirControlFlowGraph::CfgNode** NextFrameHookInLink; // A field for the callee to fill with its node of frame    (shared)
+				IN    byte_t*          NextCodeScanAddress; // Virtual address for the next engine frame to disassemble (passed down)
+				IN    LlirBasicBlock*  PreviousNodeForLink; // A pointer to the callers node of its frame of the cfg    (passed down)
+															// The callee has to link itself into the passed node
+				INOUT LlirBasicBlock** NextFrameHookInLink; // A field for the callee to fill with its node of frame    (shared)
 			};
 			std::deque<NextScanAddress> NextCodeScanAddressDeque;
 		};
@@ -188,9 +188,9 @@ export namespace sof {
 
 	private:
 		__forceinline void DoDecodeLoopTillNodeEdge(
-			IN DisasseblerEngineState&    CfgTraversalStack,
-			IN byte_t*                    VirtualInstructionPointer,
-			IN LlirControlFlowGraph::CfgNode* CfgNodeForCurrentFrame
+			IN DisasseblerEngineState& CfgTraversalStack,
+			IN byte_t*                 VirtualInstructionPointer,
+			IN LlirBasicBlock*         CfgNodeForCurrentFrame
 		) {
 			TRACE_FUNCTION_PROTO;
 			for (;;) {
@@ -198,19 +198,19 @@ export namespace sof {
 				// Allocate instruction entry for current cfg node frame
 				CfgTraversalStack.DataTracker(IDisassemblerTracker::TRACKER_CFGNODE_COUNT,
 					IDisassemblerTracker::UPDATE_INCREMENT_COUNTER);
-
-				LlirAmd64NativeEncoded* CfgNodeEntry = new LlirAmd64NativeEncoded(
-					CfgTraversalStack.ControlFlowGraphContext.GenNextSymbolIdentifier());
-				xed_decoded_inst_zero_set_mode(&CfgNodeEntry.DecodedInstruction,
+				auto& IrStatementNative = CfgNodeForCurrentFrame->AllocateLlir3acObject();
+				IrStatementNative.TypeOfStatement = LlirInstructionStatement::TYPE_PURE_NATIVE;
+				xed_decoded_inst_zero_set_mode(&IrStatementNative.NativeEncoding.DecodedInstruction,
 					&IntelXedState);
-				CfgNodeEntry.OriginalAddress = VirtualInstructionPointer;
+				xed_decoded_inst_set_user_data(&IrStatementNative.NativeEncoding.DecodedInstruction,
+					reinterpret_cast<uintptr_t&>(VirtualInstructionPointer));
 
 				// Decode current selected opcode with maximum size
 				auto MaxDecodeLength = std::min<size_t>(15,
 					static_cast<size_t>((CfgTraversalStack.PredictedFunctionBounds.first +
 						CfgTraversalStack.PredictedFunctionBounds.second) -
 						VirtualInstructionPointer));
-				auto XedDecodeResult = xed_decode(&CfgNodeEntry.DecodedInstruction,
+				auto XedDecodeResult = xed_decode(&IrStatementNative.NativeEncoding.DecodedInstruction,
 					VirtualInstructionPointer,
 					MaxDecodeLength);
 
@@ -277,17 +277,17 @@ export namespace sof {
 				// Xed successfully decoded the instruction, copy the instruction to the cfg entry
 				CfgTraversalStack.DataTracker(IDisassemblerTracker::TRACKER_INSTRUCTION_COUNT,
 					IDisassemblerTracker::UPDATE_INCREMENT_COUNTER);
-				auto InstructionLength = xed_decoded_inst_get_length(&CfgNodeEntry.DecodedInstruction);
-				memcpy(&CfgNodeEntry.InstructionText,
-					VirtualInstructionPointer,
-					InstructionLength);
-				memset(CfgNodeEntry.InstructionText + InstructionLength,
-					0,
-					15 - InstructionLength);
+				auto InstructionLength = xed_decoded_inst_get_length(&IrStatementNative.NativeEncoding.DecodedInstruction);
+				// memcpy(&CfgNodeEntry.InstructionText,
+				// 	VirtualInstructionPointer,
+				// 	InstructionLength);
+				// memset(CfgNodeEntry.InstructionText + InstructionLength,
+				// 	0,
+				// 	15 - InstructionLength);
 
 				// TODO: use formatter here instead of the iclass bullshit value i would have to look up
 				{
-					auto XedInstrctionClass = xed_decoded_inst_get_iform_enum(&CfgNodeEntry.DecodedInstruction);
+					auto XedInstrctionClass = xed_decoded_inst_get_iform_enum(&IrStatementNative.NativeEncoding.DecodedInstruction);
 					SPDLOG_DEBUG("rip={} : {}",
 						static_cast<void*>(VirtualInstructionPointer),
 						xed_iform_enum_t2str(XedInstrctionClass));
@@ -295,7 +295,7 @@ export namespace sof {
 
 				// Determine the type of instruction and with that if we have to specifically treat it
 				// there are several special cases such as trailing function calls that all need heuristic checks
-				auto InstructionCategory = xed_decoded_inst_get_category(&CfgNodeEntry.DecodedInstruction);
+				auto InstructionCategory = xed_decoded_inst_get_category(&IrStatementNative.NativeEncoding.DecodedInstruction);
 				switch (InstructionCategory) {
 				case XED_CATEGORY_RET:
 
@@ -317,13 +317,12 @@ export namespace sof {
 						*CfgNodeForCurrentFrame)) return;
 					SPDLOG_INFO("Docoded branching instruction");
 
-
 					// TODO: heuristics for "emulated call", "trailing function call" / "jump outside",
 					//       have to be added here, there are possibly more to improve decoding
 					//       Most basic handler that redispatches the disassembly engine in the standard expected use case for jmp
 					//       does not support rip relative yet, also slight in efficiencies as there could be 2 path traversals,
 					//       currently there is no better way as the addresses checked are not the same.
-					auto InstructionForm = xed_decoded_inst_get_iform_enum(&CfgNodeEntry.DecodedInstruction);
+					auto InstructionForm = xed_decoded_inst_get_iform_enum(&IrStatementNative.NativeEncoding.DecodedInstruction);
 					switch (InstructionForm) {
 					case XED_IFORM_JMP_FAR_PTRp_IMMw:
 					case XED_IFORM_JMP_FAR_MEMp2:
@@ -336,19 +335,18 @@ export namespace sof {
 						if (HeuristicDetectMsvcX64RvaJumptableCommon(CfgTraversalStack,
 							VirtualInstructionPointer,
 							CfgNodeForCurrentFrame,
-							CfgNodeEntry)) return;
+							IrStatementNative.NativeEncoding)) return;
 					
 						SPDLOG_ERROR("All heuristics for JMP_GPRv failed");
 						CfgNodeForCurrentFrame->SetNodeIsIncomplete();
 						return;
 					}
 
-
 					// Check if this is a branching or conditionally branching instruction
 					HandleRemoteInternodeLongJumpBranch(CfgTraversalStack,
 						VirtualInstructionPointer,
 						CfgNodeForCurrentFrame,
-						CfgNodeEntry);
+						IrStatementNative.NativeEncoding);
 					if (InstructionCategory == XED_CATEGORY_COND_BR) {
 
 						// This effectively virtually calls this function, as it has adapted the traversal stack for the next call
@@ -362,7 +360,7 @@ export namespace sof {
 				case XED_CATEGORY_INTERRUPT:
 					if (HeuristicDetectInterrupt29h(CfgTraversalStack,
 						CfgNodeForCurrentFrame,
-						CfgNodeEntry))
+						IrStatementNative.NativeEncoding))
 						return;
 				}
 
@@ -371,10 +369,10 @@ export namespace sof {
 			}
 		}
 
-		__forceinline bool HeuristicDetectInterrupt29h(
-			IN DisasseblerEngineState&     CfgTraversalStack,
-			IN LlirControlFlowGraph::CfgNode*  CfgNodeForCurrentFrame,
-			IN LlirControlFlowGraph::CfgEntry& CfgNodeEntry
+		bool HeuristicDetectInterrupt29h(
+			IN DisasseblerEngineState& CfgTraversalStack,
+			IN LlirBasicBlock*         CfgNodeForCurrentFrame,
+			IN LlirAmd64NativeEncoded& CfgNodeEntry
 		) {
 			TRACE_FUNCTION_PROTO;
 
@@ -410,11 +408,11 @@ export namespace sof {
 			return false;
 		}
 
-		__forceinline bool HeuristicDetectMsvcX64RvaJumptableCommon(
+		bool HeuristicDetectMsvcX64RvaJumptableCommon(
 			IN DisasseblerEngineState& CfgTraversalStack,
-			IN byte_t* VirtualInstructionPointer,
-			IN LlirControlFlowGraph::CfgNode* CfgNodeForCurrentFrame,
-			IN LlirControlFlowGraph::CfgEntry& CfgNodeEntry
+			IN byte_t*                 VirtualInstructionPointer,
+			IN LlirBasicBlock*         CfgNodeForCurrentFrame,
+			IN LlirAmd64NativeEncoded& CfgNodeEntry
 		) {
 
 			// MSVC has a common jumptable form/layout based on indices of into a table of rva's into code.
@@ -443,10 +441,11 @@ export namespace sof {
 
 
 			// Reverse walk up and find T2 "add" and T2
-			auto NumberOfDecodes = CfgNodeForCurrentFrame->size();
+			auto NumberOfDecodes = CfgNodeForCurrentFrame->EncodeHybridStream.size();
 			for (auto i = NumberOfDecodes - 2; i > -1; --i) {
 
-				auto T2LocatorClass = xed_decoded_inst_get_iform_enum(&CfgNodeForCurrentFrame->at(i).DecodedInstruction);
+				auto T2LocatorClass = xed_decoded_inst_get_iform_enum(
+					&CfgNodeForCurrentFrame->EncodeHybridStream[i].NativeEncoding.DecodedInstruction);
 				switch (T2LocatorClass) {
 				case XED_IFORM_ADD_GPRv_GPRv_01:
 
@@ -469,8 +468,8 @@ export namespace sof {
 		__forceinline void HandleRemoteInternodeLongJumpBranch(
 			IN DisasseblerEngineState& CfgTraversalStack,
 			IN byte_t*                 VirtualInstructionPointer,
-			IN LlirControlFlowGraph::CfgNode* CfgNodeForCurrentFrame,
-			IN LlirControlFlowGraph::CfgEntry& CfgNodeEntry
+			IN LlirBasicBlock*         CfgNodeForCurrentFrame,
+			IN LlirAmd64NativeEncoded& CfgNodeEntry
 		) {
 			TRACE_FUNCTION_PROTO;
 
@@ -536,14 +535,14 @@ export namespace sof {
 																 // and eliminates overlaying identical code (assumptions),
 																 // returns true if rebound, otherwise false to indicate no work
 			IN DisasseblerEngineState& CfgTraversalStack,     // The stack location of the disassembly engine for internal use
-			IN LlirControlFlowGraph::CfgNode& CfgNodeForCurrentFrame // The node to check for overlays and stripping/rebinding
+			IN LlirBasicBlock& CfgNodeForCurrentFrame // The node to check for overlays and stripping/rebinding
 		) {
 			TRACE_FUNCTION_PROTO;
 
 			// Potentially fell into a existing node already, verify and or strip and rebind,
 			// find possibly overlaying node and check
-			auto NodeTerminatorLocation = CfgNodeForCurrentFrame.back().OriginalAddress;
-			std::array<const LlirControlFlowGraph::CfgNode*, 1> CfgNodeExclusions{ &CfgNodeForCurrentFrame };
+			auto NodeTerminatorLocation = CfgNodeForCurrentFrame.GetPhysicalNodeEndAddress();
+			std::array<const LlirBasicBlock*, 1> CfgNodeExclusions{ &CfgNodeForCurrentFrame };
 			auto OptionalCollidingNode = CfgTraversalStack.ControlFlowGraphContext.FindNodeContainingVirtualAddressAndExclude(
 				LlirControlFlowGraph::SEARCH_REVERSE_PREORDER_NRL,
 				NodeTerminatorLocation,
@@ -551,16 +550,16 @@ export namespace sof {
 			if (OptionalCollidingNode) {
 
 				// Found node gotta strip it and relink, first find the location of where they touch
-				auto StartAddressOfNode = OptionalCollidingNode->front().OriginalAddress;
-				auto TouchIterator = std::find_if(CfgNodeForCurrentFrame.begin(),
-					CfgNodeForCurrentFrame.end(),
+				auto StartAddressOfNode = OptionalCollidingNode->GetPhysicalNodeStartAddress();
+				auto TouchIterator = std::find_if(CfgNodeForCurrentFrame.EncodeHybridStream.begin(),
+					CfgNodeForCurrentFrame.EncodeHybridStream.end(),
 					[StartAddressOfNode](
-						IN const LlirControlFlowGraph::CfgEntry& DecodeEntry
+						IN const LlirInstructionStatement& DecodeEntry
 						) -> bool {
 							TRACE_FUNCTION_PROTO;
-							return DecodeEntry.OriginalAddress == StartAddressOfNode;
+							return DecodeEntry.GetUniquePhysicalAddress() == StartAddressOfNode;
 					});
-				if (TouchIterator == CfgNodeForCurrentFrame.end()) {
+				if (TouchIterator == CfgNodeForCurrentFrame.EncodeHybridStream.end()) {
 
 					// Overlaying code somehow, track and throw as exception
 					CfgTraversalStack.DataTracker(IDisassemblerTracker::TRACKER_OVERLAYING_COUNT,
@@ -573,13 +572,13 @@ export namespace sof {
 				SPDLOG_INFO("Found fallthrough into existing node, fixing graph");
 				CfgTraversalStack.DataTracker(IDisassemblerTracker::TRACKER_STRIPPED_NODES,
 					IDisassemblerTracker::UPDATE_INCREMENT_COUNTER);
-				CfgNodeForCurrentFrame.erase(TouchIterator,
-					CfgNodeForCurrentFrame.end());
+				CfgNodeForCurrentFrame.EncodeHybridStream.erase(TouchIterator, 
+					CfgNodeForCurrentFrame.EncodeHybridStream.end());
 				CfgNodeForCurrentFrame.NonBranchingLeftNode = OptionalCollidingNode;
 				CfgNodeForCurrentFrame.LinkNodeIntoRemoteNodeInputList(*OptionalCollidingNode);
 
 				// Security checks
-				if (CfgNodeForCurrentFrame.empty())
+				if (CfgNodeForCurrentFrame.EncodeHybridStream.empty())
 					throw SingularityException(
 						fmt::format("Stripping of node {} cannot result in empty node",
 							static_cast<void*>(&CfgNodeForCurrentFrame)),

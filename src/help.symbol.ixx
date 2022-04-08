@@ -36,7 +36,7 @@ export namespace sof {
 				CLSCTX_INPROC_SERVER);
 			if (FAILED(ComResult))
 				throw SingularityException(
-					fmt::format("Failed to create DIASOURCE instance with " ESC_BRIGHTRED"{}" ESC_RESET
+					fmt::format("Failed to create DIASOURCE instance with " ESC_BRIGHTRED"{:x}" ESC_RESET
 						" : \"" ESC_BRIGHTRED"{}\"",
 						ComResult,
 						FormatWin32ErrorMessage(ComResult)),
