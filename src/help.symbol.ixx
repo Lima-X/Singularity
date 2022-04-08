@@ -112,7 +112,7 @@ export namespace sof {
 		// }
 
 		void InstallPdbFileMappingVirtualAddress(
-			IN const IImageLoaderHelp* VirtualImage
+			IN const ImageProcessor* VirtualImage
 		) {
 			TRACE_FUNCTION_PROTO;
 

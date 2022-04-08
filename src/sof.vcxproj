@@ -22,8 +22,7 @@
     <ClCompile Include="control.ixx" />
     <ClCompile Include="control.tasks.ixx" />
     <ClCompile Include="help.symbol.ixx" />
-    <ClCompile Include="image.edit.ixx" />
-    <ClCompile Include="image.load.ixx" />
+    <ClCompile Include="image.ixx" />
     <ClCompile Include="imgui.impl.ixx" />
     <ClCompile Include="sof.base.ixx" />
     <ClCompile Include="sof.llir.ixx" />

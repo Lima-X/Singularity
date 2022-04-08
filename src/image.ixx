@@ -14,21 +14,6 @@ export namespace sof {
 	
 	// Interface for getting the base functionality in order to avoid crtp-plugin type issues,
 	// this also includes interfaces, to provide functionality and track data
-	export class IImageLoaderHelp {
-	public:
-	
-		virtual std::string_view GetImageFileName() const = 0;
-		virtual byte_t* GetImageFileMapping() const = 0;
-		virtual IMAGE_DOS_HEADER& GetImageDosHeader() const = 0;
-		virtual IMAGE_NT_HEADERS& GetImageHeader() const = 0;
-		virtual IMAGE_FILE_HEADER& GetImageFileHeader() const = 0;
-		virtual IMAGE_OPTIONAL_HEADER& GetImageOptionalHeader() const = 0;
-		virtual std::span<IMAGE_DATA_DIRECTORY> GetImageDataSections() const = 0;
-		virtual IMAGE_DATA_DIRECTORY& GetImageDataSection(
-			IN int32_t DataDirectoryIndex
-		) const = 0;
-		virtual std::span<IMAGE_SECTION_HEADER> GetImageSectionHeaders() const = 0;
-	};
 	export class IImageLoaderTracker {
 	public:
 		enum TrackerInfoTag {
@@ -135,10 +120,7 @@ export namespace sof {
 	// Implements the minimum required toolset to load, map and rebuild a portable executable.
 	// This module statically derives from and extends this base loader,
 	// in order to more easily work with coff images and parse or edit them.
-	export template<template<class> class... T>
-	class ImageLoader : 
-		public IImageLoaderHelp,
-		public T<ImageLoader<T...>>... {
+	class ImageProcessor {
 	
 		enum ImageHelpWorkState {
 			IMAGEHELP_REFUSE = -2000, // A post detection found an issue with the object,
@@ -169,7 +151,7 @@ export namespace sof {
 			FILESHARE_EXCLUSIVE = 0
 		};
 	
-		ImageLoader(
+		ImageProcessor(
 			IN  const std::string_view& ImageFileName2,
 			OPT       FileAccessRights  FileAccess = FILE_READWRITE,
 			OPT       FileShareRights   FileSharing = FILESHARE_READ
@@ -195,7 +177,7 @@ export namespace sof {
 				ImageFileName,
 				FileAccess);
 		}
-		~ImageLoader() {
+		~ImageProcessor() {
 			TRACE_FUNCTION_PROTO;
 	
 			// Unmap and discard changes, then close the file and exit
@@ -704,38 +686,99 @@ export namespace sof {
 			}
 		}
 	
-		IMAGE_DOS_HEADER& GetImageDosHeader() const override {
+		IMAGE_DOS_HEADER& GetImageDosHeader() const  {
 			TRACE_FUNCTION_PROTO; return GetCoffMemberByTemplateId<GET_DOS_HEADER>();
 		}
-		IMAGE_NT_HEADERS& GetImageHeader() const override {
+		IMAGE_NT_HEADERS& GetImageHeader() const  {
 			TRACE_FUNCTION_PROTO; return GetCoffMemberByTemplateId<GET_IMAGE_HEADER>();
 		}
-		IMAGE_FILE_HEADER& GetImageFileHeader() const override {
+		IMAGE_FILE_HEADER& GetImageFileHeader() const  {
 			TRACE_FUNCTION_PROTO; return GetCoffMemberByTemplateId<GET_FILE_HEADER>();
 		}
-		IMAGE_OPTIONAL_HEADER& GetImageOptionalHeader() const override {
+		IMAGE_OPTIONAL_HEADER& GetImageOptionalHeader() const  {
 			TRACE_FUNCTION_PROTO; return GetCoffMemberByTemplateId<GET_OPTIONAL_HEADER>();
 		}
-		std::span<IMAGE_DATA_DIRECTORY> GetImageDataSections() const override {
+		std::span<IMAGE_DATA_DIRECTORY> GetImageDataSections() const  {
 			TRACE_FUNCTION_PROTO; return GetCoffMemberByTemplateId<GET_DATA_DIRECTORIES>();
 		}
 		IMAGE_DATA_DIRECTORY& GetImageDataSection(
 			IN int32_t DataDirectoryIndex
-		) const override {
+		) const  {
 			TRACE_FUNCTION_PROTO; return GetCoffMemberByTemplateId<GET_DATA_DIRECTORIES>()[DataDirectoryIndex];
 		}
-		std::span<IMAGE_SECTION_HEADER> GetImageSectionHeaders() const override {
+		std::span<IMAGE_SECTION_HEADER> GetImageSectionHeaders() const  {
 			TRACE_FUNCTION_PROTO; return GetCoffMemberByTemplateId<GET_SECTION_HEADERS>();
 		}
 	#pragma endregion
-	
+
+
+
+
+	#pragma region Exception directory parser and editor components
+		std::span<RUNTIME_FUNCTION>
+			GetRuntimeFunctionTable() const {
+			TRACE_FUNCTION_PROTO;
+
+			// Locate the runtime function table and test, then return view
+			IMAGE_DATA_DIRECTORY& ExceptionDirectroy = GetImageDataSection(IMAGE_DIRECTORY_ENTRY_EXCEPTION);
+
+			return std::span(
+				reinterpret_cast<const PRUNTIME_FUNCTION>(
+					ExceptionDirectroy.VirtualAddress
+					+ GetImageFileMapping()),
+				ExceptionDirectroy.Size / sizeof(RUNTIME_FUNCTION));
+		}
+		PRUNTIME_FUNCTION GetRuntimeFunctionForAddress(
+			IN rva_t RvaWithinPossibleFunction
+		) {
+			TRACE_FUNCTION_PROTO;
+			auto ViewOfFunctionTable = GetRuntimeFunctionTable();
+			for (auto& FunctionEntry : ViewOfFunctionTable)
+				if (FunctionEntry.BeginAddress <= RvaWithinPossibleFunction &&
+					FunctionEntry.EndAddress >= RvaWithinPossibleFunction)
+					return &FunctionEntry;
+			return nullptr;
+		}
+		PRUNTIME_FUNCTION GetRuntimeFunctionForAddress(
+			IN byte_t* VirtualAddressWithinPossibleFunction
+		) {
+			TRACE_FUNCTION_PROTO;
+			return GetRuntimeFunctionForAddress(
+				static_cast<rva_t>(VirtualAddressWithinPossibleFunction - GetImageFileMapping()));
+		}
+	#pragma endregion
+
+		uint32_t ApproximateNumberOfRelocationsInImage() const { // Calculates a rough estimate of the number of relocations in the image,
+																 // by taking the average of the higher and lower bounds.
+			TRACE_FUNCTION_PROTO;
+
+			auto& RelocationDirectory = GetImageDataSection(IMAGE_DIRECTORY_ENTRY_BASERELOC);
+			if (!RelocationDirectory.Size)
+				return 0;
+
+			uint32_t MaxNumberOfRelocations = RelocationDirectory.Size / 2;
+			auto SectionHeaders = GetImageSectionHeaders();
+			size_t SizeOfPrimaryImage = 0;
+			for (const auto& Section : SectionHeaders)
+				SizeOfPrimaryImage += Section.Misc.VirtualSize;
+
+			uint32_t MinNumberOfRelocations = MaxNumberOfRelocations -
+				SizeOfPrimaryImage / 4096;
+			return (MaxNumberOfRelocations + MinNumberOfRelocations) / 2;
+		}
+
+
+
+
+
+
 		byte_t* GetImageFileMapping() const {
 			TRACE_FUNCTION_PROTO; return ImageMapping.get();
 		}
 		std::string_view GetImageFileName() const {
 			TRACE_FUNCTION_PROTO; return ImageFileName;
 		}
-	
+
 	// Minimal private sector, just required to store the file handled and a object to reference the mapping
 	private:
 		void ReconstructImageFromViewWriteBackAndRelease( // Reconstructs the physical image from the in memory view

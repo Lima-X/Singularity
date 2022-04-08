@@ -623,8 +623,8 @@ export namespace sof {
 
 	private:
 		LlirControlFlowGraph(
-			IN const IImageLoaderHelp& ImageMapping,
-			IN const FunctionAddress&  FunctionLimits
+			IN const ImageProcessor&  ImageMapping,
+			IN const FunctionAddress& FunctionLimits
 		)
 			: OwningImageMapping(&ImageMapping),
 			  FunctionLimits(FunctionLimits) {
@@ -700,8 +700,8 @@ export namespace sof {
 		Llir3acOperand& Allocate3acOperandEnlist() {
 			TRACE_FUNCTION_PROTO; return Llir3acOperandRegistry.emplace_back(++NextSymbolAllocator);
 		}
-		const IImageLoaderHelp* OwningImageMapping;
-		const FunctionAddress   FunctionLimits;
+		const ImageProcessor* OwningImageMapping;
+		const FunctionAddress FunctionLimits;
 
 		LlirBasicBlock* InitialControlFlowGraphHead = nullptr;
 		CfgFlagsUnion   BFlags{};

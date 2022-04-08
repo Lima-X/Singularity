@@ -36,12 +36,6 @@
     <ClCompile Include="sof.llir.ixx">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="image.edit.ixx">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="image.load.ixx">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="control.cli.ixx">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -49,6 +43,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="control.gui.ixx">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="image.ixx">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

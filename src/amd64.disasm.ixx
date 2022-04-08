@@ -76,7 +76,7 @@ export namespace sof {
 		using FunctionAddress = FunctionAddress;
 
 		CfgGenerator(
-			IN const IImageLoaderHelp& ImageMapping,
+			IN const ImageProcessor& ImageMapping,
 			IN const xed_state_t&      IntelXedState
 		)
 			: ImageMapping(ImageMapping),
@@ -589,7 +589,7 @@ export namespace sof {
 		}
 
 
-		const IImageLoaderHelp& ImageMapping;
+		const ImageProcessor& ImageMapping;
 		const xed_state_t       IntelXedState;
 	};
 }

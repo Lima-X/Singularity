@@ -7,14 +7,10 @@ import sof.control.gui; // quick hack to get the the IOpenFileDialog object
 
 import sof.llir;
 import sof.image.load;
-import sof.image.edit;
 import sof.amd64.disasm;
 import sof.amd64.lift;
 import sof.help.symbol;
 export namespace sof {
-
-	// Special public name for the image loader and image editor (etc.) tool
-	export using ImageHelp = ImageLoader<ImageEditor>;
 
 	// This defines a base interface type that every async queue object must inherit from
 	export class IVisualWorkObject {
@@ -193,7 +189,7 @@ export namespace sof {
 
 				// Load the image, this has to be done after loading the symbols
 				ImageLoadState = VisualLoadImageObject::STATE_LOADING_MEMORY;
-				TargetImage = std::make_unique<ImageHelp>(ImageFile.string());
+				TargetImage = std::make_unique<ImageProcessor>(ImageFile.string());
 				TargetImage->MapImageIntoMemory(InfoTracker);
 
 				// Register image address for symbol server
@@ -232,8 +228,8 @@ export namespace sof {
 		std::atomic_uint32_t          NumberOfPolyX;  // STATE_LOADING_MEMORY: NumberOfSections in image
 													  // STATE_RELOCATING:     NumberOfRelocations in image
 
-		std::unique_ptr<ImageHelp>  TargetImage;  // Containers for the image and symbols, if available
-		std::unique_ptr<SymbolHelp> SymbolServer;
+		std::unique_ptr<ImageProcessor> TargetImage;  // Containers for the image and symbols, if available
+		std::unique_ptr<SymbolHelp>     SymbolServer;
 
 		IImageLoaderTracker* InfoTracker;         // Datatracker reference interface pointer, this is hosted by another instance
 		filesystem::path     ImageFile;           // Image and pdb file names to load (pdb only if explicit)
