@@ -196,16 +196,13 @@ export namespace sof {
 			for (;;) {
 
 				// Allocate instruction entry for current cfg node frame
+				// and decode current selected opcode with maximum size
 				CfgTraversalStack.DataTracker(IDisassemblerTracker::TRACKER_CFGNODE_COUNT,
 					IDisassemblerTracker::UPDATE_INCREMENT_COUNTER);
 				auto& IrStatementNative = CfgNodeForCurrentFrame->AllocateLlir3acObject();
 				IrStatementNative.TypeOfStatement = LlirInstructionStatement::TYPE_PURE_NATIVE;
 				xed_decoded_inst_zero_set_mode(&IrStatementNative.NativeEncoding.DecodedInstruction,
 					&IntelXedState);
-				xed_decoded_inst_set_user_data(&IrStatementNative.NativeEncoding.DecodedInstruction,
-					reinterpret_cast<uintptr_t&>(VirtualInstructionPointer));
-
-				// Decode current selected opcode with maximum size
 				auto MaxDecodeLength = std::min<size_t>(15,
 					static_cast<size_t>((CfgTraversalStack.PredictedFunctionBounds.first +
 						CfgTraversalStack.PredictedFunctionBounds.second) -
@@ -213,6 +210,8 @@ export namespace sof {
 				auto XedDecodeResult = xed_decode(&IrStatementNative.NativeEncoding.DecodedInstruction,
 					VirtualInstructionPointer,
 					MaxDecodeLength);
+				xed_decoded_inst_set_user_data(&IrStatementNative.NativeEncoding.DecodedInstruction,
+					reinterpret_cast<uintptr_t&>(VirtualInstructionPointer));
 
 				// Handle xed decode errors and others or continue 
 				#define CFGEXCEPTION_FOR_XED_ERROR(ErrorType, StatusCode, ExceptionText, ...)\
@@ -273,18 +272,11 @@ export namespace sof {
 				}
 				#undef CFGEXCEPTION_FOR_XED_ERROR
 
-
 				// Xed successfully decoded the instruction, copy the instruction to the cfg entry
 				CfgTraversalStack.DataTracker(IDisassemblerTracker::TRACKER_INSTRUCTION_COUNT,
 					IDisassemblerTracker::UPDATE_INCREMENT_COUNTER);
 				auto InstructionLength = xed_decoded_inst_get_length(&IrStatementNative.NativeEncoding.DecodedInstruction);
-				// memcpy(&CfgNodeEntry.InstructionText,
-				// 	VirtualInstructionPointer,
-				// 	InstructionLength);
-				// memset(CfgNodeEntry.InstructionText + InstructionLength,
-				// 	0,
-				// 	15 - InstructionLength);
-
+				
 				// TODO: use formatter here instead of the iclass bullshit value i would have to look up
 				{
 					auto XedInstrctionClass = xed_decoded_inst_get_iform_enum(&IrStatementNative.NativeEncoding.DecodedInstruction);
@@ -504,7 +496,7 @@ export namespace sof {
 					// Need to check if the new address overlays with any of the registered decodes,
 					// if true, the node needs to be spliced, otherwise we have an overlaying assembly.
 					// NOTE: Overlaying assembly is not yet supported it will throw an exception!
-					auto Inserted = OptionalPossibleCollidingNode->TrySpliceOfHeadAtAddressForInsert(VirtualBranchLocation);
+					auto Inserted = OptionalPossibleCollidingNode->TrySpliceOfHeadAtAddressForInsert2(VirtualBranchLocation);
 					if (Inserted) {
 
 						// Track data and link into spliced node
@@ -541,12 +533,12 @@ export namespace sof {
 
 			// Potentially fell into a existing node already, verify and or strip and rebind,
 			// find possibly overlaying node and check
-			auto NodeTerminatorLocation = CfgNodeForCurrentFrame.GetPhysicalNodeEndAddress();
-			std::array<const LlirBasicBlock*, 1> CfgNodeExclusions{ &CfgNodeForCurrentFrame };
+			auto NodeTerminatorLocation = CfgNodeForCurrentFrame.EncodeHybridStream.back().GetUniquePhysicalAddress();
+			const LlirBasicBlock* CfgNodeExclusions[1]{ &CfgNodeForCurrentFrame };
 			auto OptionalCollidingNode = CfgTraversalStack.ControlFlowGraphContext.FindNodeContainingVirtualAddressAndExclude(
 				LlirControlFlowGraph::SEARCH_REVERSE_PREORDER_NRL,
 				NodeTerminatorLocation,
-				std::span{ CfgNodeExclusions });
+				CfgNodeExclusions);
 			if (OptionalCollidingNode) {
 
 				// Found node gotta strip it and relink, first find the location of where they touch

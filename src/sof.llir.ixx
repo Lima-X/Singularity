@@ -278,7 +278,7 @@ export namespace sof {
 
 
 		bool TrySpliceOfHeadAtAddressForInsert2(
-			IN void* UidOfEntryToSplice
+			IN byte_t* UidOfEntryToSplice
 		);
 		bool TrySpliceOfHeadAtAddressForInsert(       // Tries to splice of the node head at specified address and rebinds,
 													  // returns true if successful or false if address was not found.
@@ -602,8 +602,8 @@ export namespace sof {
 							NodeExclusions.end(),
 							TraversalNode) != NodeExclusions.end())
 							return false;
-						return TraversalNode->GetPhysicalNodeStartAddress() <= VirtualAddress
-							&& TraversalNode->GetPhysicalNodeEndAddress() >= VirtualAddress;
+						return VirtualAddress >= TraversalNode->GetPhysicalNodeStartAddress()
+							&& VirtualAddress < TraversalNode->GetPhysicalNodeEndAddress();
 				});
 		}
 
@@ -712,7 +712,7 @@ export namespace sof {
 	};
 
 	bool LlirBasicBlock::TrySpliceOfHeadAtAddressForInsert2(
-		IN void* UidOfEntryToSplice
+		IN byte_t* UidOfEntryToSplice
 	) {
 		TRACE_FUNCTION_PROTO;
 
@@ -748,7 +748,7 @@ export namespace sof {
 		SplicedNodeHead->NonBranchingLeftNode = this;
 
 		// Security checks, verify nodes contain data
-		if (SplicedNodeHead->EncodeHybridStream.empty() || this->EncodeHybridStream.empty())
+		if (SplicedNodeHead->EncodeHybridStream.empty() || EncodeHybridStream.empty())
 			throw SingularityException(
 				fmt::format("Splicing of node {} into {}, cannot result in empty node",
 					static_cast<void*>(this),
