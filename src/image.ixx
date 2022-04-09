@@ -169,11 +169,11 @@ export namespace sof {
 				nullptr);
 			if (FileHandle == INVALID_HANDLE_VALUE)
 				throw SingularityException(
-					fmt::format("Failed to open file \"{}\" with {}",
+					fmt::format("Failed to open file " ESC_BRIGHTYELLOW"\"{}\"" ESC_RESET" with " ESC_BRIGHTMAGENTA"{:x}",
 						ImageFileName,
 						GetLastError()),
 					SingularityException::STATUS_FAILED_TO_OPEN_FILE);
-			SPDLOG_INFO("Opened file \"{}\" with {} access rights",
+			SPDLOG_INFO("Opened file " ESC_BRIGHTYELLOW"\"{}\"" ESC_RESET" with " ESC_BRIGHTMAGENTA"{}" ESC_RESET" access rights",
 				ImageFileName,
 				FileAccess);
 		}
@@ -184,7 +184,7 @@ export namespace sof {
 			RejectAndDiscardFileChanges();
 			if (FileHandle != INVALID_HANDLE_VALUE) {
 				CloseHandle(FileHandle);
-				SPDLOG_INFO("Closed file handle [{}]",
+				SPDLOG_INFO("Closed file handle [" ESC_BRIGHTCYAN"{}" ESC_RESET"]",
 					FileHandle);
 			}
 		}
@@ -225,7 +225,7 @@ export namespace sof {
 					SingularityException::STATUS_HANDLE_ALREADY_REJECTED);
 			if (ImageMapping.get())
 				throw SingularityException(
-					fmt::format("The image has already been mapped to {}, may not map twice",
+					fmt::format("The image has already been mapped to " ESC_BRIGHTRED"{}" ESC_RESET", may not map twice",
 						static_cast<void*>(ImageMapping.get())),
 					SingularityException::STATUS_IMAGE_ALREADY_MAPPED);
 	
@@ -235,7 +235,7 @@ export namespace sof {
 					OFFSET_OF(IMAGE_DOS_HEADER, e_magic));
 			if (DosHeaderSignature != IMAGE_DOS_SIGNATURE)
 				throw SingularityException(
-					fmt::format("The image opened has a bad DOS header or is not a PE-COFF image, detected [{:#04x}]",
+					fmt::format("The image opened has a bad DOS header or is not a PE-COFF image, detected [" ESC_BRIGHTCYAN"{:#04x}" ESC_RESET"]",
 						DosHeaderSignature),
 					SingularityException::STATUS_FAILED_SIGNATURE_TEST);
 			SPDLOG_INFO("Validated image header, signature matches DOS header");
@@ -255,7 +255,8 @@ export namespace sof {
 			if (PeHeaderSignature != IMAGE_NT_SIGNATURE ||
 				OptHeaderSignature != IMAGE_NT_OPTIONAL_HDR_MAGIC)
 				throw SingularityException(
-					fmt::format("The file opened has bad PE/Opt -headers, or is not a PE-COFF image, detected [{:08x}][{:04x}]",
+					fmt::format("The file opened has bad PE/Opt -headers, or is not a PE-COFF image, "
+						"detected [" ESC_BRIGHTCYAN"{:08x}" ESC_RESET"][" ESC_BRIGHTCYAN"{:04x}" ESC_RESET"]",
 						PeHeaderSignature,
 						OptHeaderSignature),
 					SingularityException::STATUS_FAILED_SIGNATURE_TEST);
@@ -268,12 +269,13 @@ export namespace sof {
 				decltype(IMAGE_OPTIONAL_HEADER::SizeOfImage)>(
 					ModuleHeaderOffset + OFFSET_OF(IMAGE_NT_HEADERS,
 						OptionalHeader.SizeOfImage));
-			SPDLOG_INFO("Detected virtual image size of {}",
+			SPDLOG_INFO("Detected virtual image size of " ESC_BRIGHTGREEN"{}",
 				SizeOfImage);
 			if (VirtualExtension) {
 				if (VirtualExtension < SizeOfImage)
 					throw SingularityException(
-						fmt::format("The passed virtual extension of {} was smaller than the detected virtual image size of {}",
+						fmt::format("The passed virtual extension of " ESC_BRIGHTGREEN"{}" ESC_RESET" was smaller "
+							"than the detected virtual image size of " ESC_BRIGHTGREEN"{}",
 							VirtualExtension,
 							SizeOfImage),
 						SingularityException::STATUS_SIZE_NOT_BIGGER_OR_EQUAL);
@@ -301,7 +303,7 @@ export namespace sof {
 					MEM_RESERVE,
 					PAGE_NOACCESS);
 			CheckOrThrowMemory(ImageMapping.get());
-			SPDLOG_INFO("Reserved virtual memory at {} for image of size {}",
+			SPDLOG_INFO("Reserved virtual memory at " ESC_BRIGHTRED"{}" ESC_RESET" for image of size " ESC_BRIGHTGREEN"{}",
 				static_cast<void*>(ImageMapping.get()),
 				SizeOfImage);
 	
@@ -340,7 +342,7 @@ export namespace sof {
 			#undef MERGE_CHECK_IMAGE
 			if (ImageFileCheckPattern)
 				throw SingularityException(
-					fmt::format("The image opened is not suitable for processing, detected [{:05b}] failures",
+					fmt::format("The image opened is not suitable for processing, detected [" ESC_BRIGHTCYAN"{:05b}" ESC_RESET"] failures",
 						ImageFileCheckPattern),
 					SingularityException::STATUS_IMAGE_NOT_SUITABLE);
 			SPDLOG_INFO("Fully validated image, the image is suitable for processing");
@@ -369,7 +371,7 @@ export namespace sof {
 					ImageMapping.get() + Section.VirtualAddress,
 					Section.SizeOfRawData);
 				ExternTracker->UpdateTrackerOrAbortCheck(IImageLoaderTracker::TRACKER_UPDATE_SECTIONS);
-				SPDLOG_INFO("Mapped section \"{}\" at address {} with size {}",
+				SPDLOG_INFO("Mapped section " ESC_BRIGHTYELLOW"\"{}\"" ESC_RESET" at address " ESC_BRIGHTRED"{}" ESC_RESET" with size " ESC_BRIGHTGREEN"{}",
 					std::string_view(reinterpret_cast<char*>(Section.Name), 
 						IMAGE_SIZEOF_SHORT_NAME),
 					static_cast<void*>(ImageMapping.get() + Section.VirtualAddress),
@@ -413,11 +415,11 @@ export namespace sof {
 					nullptr);
 				if (DisposableFileHandle == INVALID_HANDLE_VALUE)
 					throw SingularityException(
-						fmt::format("Failed to reopen file \"{}\" with {}",
+						fmt::format("Failed to reopen file " ESC_BRIGHTYELLOW"\"{}\"" ESC_RESET" with " ESC_BRIGHTCYAN"{}",
 							ImageFileName,
 							GetLastError()),
 						SingularityException::STATUS_FAILED_TO_OPEN_FILE);
-				SPDLOG_INFO("Reopened file \"{}\" with {} access rights",
+				SPDLOG_INFO("Reopened file " ESC_BRIGHTYELLOW"\"{}\"" ESC_RESET" with " ESC_BRIGHTCYAN"{}" ESC_RESET" access rights",
 					ImageFileName,
 					GENERIC_WRITE);
 			}
@@ -444,11 +446,11 @@ export namespace sof {
 				nullptr);
 			if (DisposableFileHandle == INVALID_HANDLE_VALUE)
 				throw SingularityException(
-					fmt::format("Failed to reopen file \"{}\" with {}",
+					fmt::format("Failed to reopen file " ESC_BRIGHTYELLOW"\"{}\"" ESC_RESET" with " ESC_BRIGHTCYAN"{}",
 						ImageFileName,
 						GetLastError()),
 					SingularityException::STATUS_FAILED_TO_OPEN_FILE);
-			SPDLOG_INFO("Opened new file \"{}\" with {} access rights",
+			SPDLOG_INFO("Reopened file " ESC_BRIGHTYELLOW"\"{}\"" ESC_RESET" with " ESC_BRIGHTCYAN"{}" ESC_RESET" access rights",
 				ImageFileName,
 				GENERIC_WRITE);
 	
@@ -522,26 +524,26 @@ export namespace sof {
 					case IMAGE_REL_BASED_DIR64:
 						*reinterpret_cast<uintptr_t*>(BaseRelocationAddress) += RelocationDelta;
 						ExternTracker->UpdateTrackerOrAbortCheck(IImageLoaderTracker::TRACKER_UPDATE_RELOCS);
-						SPDLOG_DEBUG("Applied base relocation at address {}",
+						SPDLOG_DEBUG("Applied base relocation at address " ESC_BRIGHTRED"{}",
 							BaseRelocationAddress);
 						break;
 	
 					default:
 						throw SingularityException(
-							fmt::format("The relocation entry at {} for {}, was unsupported",
+							fmt::format("The relocation entry at " ESC_BRIGHTRED"{}" ESC_RESET" for " ESC_BRIGHTRED"{}" ESC_RESET", was unsupported",
 								static_cast<void*>(&BaseRelocation),
 								BaseRelocationAddress),
 							SingularityException::STATUS_UNSUPPORTED_RELOCATION);
 					}
 				}
 	
-				SPDLOG_DEBUG("Apllied all relocations of relocation block at {}",
+				SPDLOG_DEBUG("Apllied all relocations of relocation block at " ESC_BRIGHTRED"{}",
 					static_cast<void*>(&RelocationBlock));
 			}
 	
 			// Fix up headers and exit
 			GetCoffMemberByTemplateId<GET_OPTIONAL_HEADER>().ImageBase = DesiredImageBase;
-			SPDLOG_INFO("Fully relocated image and patched base, to virtual address {}",
+			SPDLOG_INFO("Fully relocated image and patched base, to virtual address " ESC_BRIGHTRED"{}",
 				reinterpret_cast<void*>(DesiredImageBase));
 		}
 	
@@ -569,12 +571,13 @@ export namespace sof {
 					FILE_BEGIN);
 				if (IoStatus == 0)
 					throw SingularityException(
-						fmt::format("Failed to move file pointer of file [{}] to {:x} with {}",
+						fmt::format("Failed to move file pointer of file [" ESC_BRIGHTMAGENTA"{}" ESC_RESET"] to "
+							ESC_BRIGHTBLUE"{:x}" ESC_RESET" with " ESC_BRIGHTCYAN"{}",
 							FileHandle,
 							FileOffset,
 							GetLastError()),
 						SingularityException::STATUS_FAILED_FILE_POINTER);
-				SPDLOG_DEBUG("Moved file pointer of file [{}] to offset {:x}",
+				SPDLOG_DEBUG("Moved file pointer of file [" ESC_BRIGHTMAGENTA"{}" ESC_RESET"] to offset " ESC_BRIGHTBLUE"{:x}",
 					FileHandle,
 					FileOffset);
 			}
@@ -600,12 +603,14 @@ export namespace sof {
 			// Check Io operation for error and throw
 			if (IoStatus == 0)
 				throw SingularityException(
-					fmt::format("Failed to read/write on file [{}] of size {:x} with {}",
+					fmt::format("Failed to read/write on file [" ESC_BRIGHTMAGENTA"{}" ESC_RESET"] of size "
+						ESC_BRIGHTBLUE"{:x}" ESC_RESET" with " ESC_BRIGHTCYAN"{}",
 						FileHandle,
 						RawDataLength,
 						GetLastError()),
 					SingularityException::STATUS_FAILED_IO_OPERATION);
-			SPDLOG_INFO("Read/Wrote file [{}] at [{:x}:{:x}]",
+			SPDLOG_INFO("Read/Wrote file [" ESC_BRIGHTMAGENTA"{}" ESC_RESET"] at "
+				"[" ESC_BRIGHTBLUE"{:x}" ESC_RESET":" ESC_BRIGHTGREEN"{:x}" ESC_RESET"]",
 				FileHandle,
 				FileOffset, RawDataLength);
 		}
@@ -802,7 +807,7 @@ export namespace sof {
 					0,
 					ImageMapping.get(),
 					HeaderSizes);
-				SPDLOG_INFO("Wrote back header information to file of size {}",
+				SPDLOG_INFO("Wrote back header information to file of size " ESC_BRIGHTGREEN"{}",
 					HeaderSizes);
 	
 				// Write the actual content, aka the sections of the image
@@ -813,7 +818,8 @@ export namespace sof {
 						Section.PointerToRawData,
 						ImageMapping.get() + Section.VirtualAddress,
 						Section.SizeOfRawData);
-					SPDLOG_INFO("Reconstructed section \"{}\" at rva {:#x} with size {}",
+					SPDLOG_INFO("Reconstructed section " ESC_BRIGHTYELLOW"\"{}\"" ESC_RESET" at rva " ESC_BRIGHTRED"{:#x} "
+						ESC_RESET"with size " ESC_BRIGHTGREEN"{}",
 						std::string_view(reinterpret_cast<char*>(Section.Name),
 							IMAGE_SIZEOF_SHORT_NAME),
 						Section.VirtualAddress,
@@ -825,7 +831,7 @@ export namespace sof {
 			// then unmap and release view of file.
 			RejectFileCloseHandles();
 			DisposableFileHandle = INVALID_HANDLE_VALUE;
-			SPDLOG_INFO("Unmapped image from {}",
+			SPDLOG_INFO("Unmapped image from " ESC_BRIGHTRED"{}",
 				static_cast<void*>(ImageMapping.get()));
 			ImageMapping.reset();
 			ImageFileName.clear();

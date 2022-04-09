@@ -94,6 +94,16 @@ export int32_t WinMain(
 		XED_MACHINE_MODE_LONG_64,
 		XED_ADDRESS_WIDTH_64b);
 	SPDLOG_INFO("Initialized intelxed's decoder/encoder tables");
+	xed_format_options_t XedFormatConfig{
+		.hex_address_before_symbolic_name = true,
+		.xml_a = false,
+		.xml_f = false,
+		.omit_unit_scale = true,
+		.no_sign_extend_signed_immediates = true,
+		.write_mask_curly_k0 = false,
+		.lowercase_hex = true,
+	};
+	xed_format_set_options(XedFormatConfig);
 
 	// Configure and initialize glfw and imgui
 	glfwSetErrorCallback(GlfwErrorHandlerCallback);

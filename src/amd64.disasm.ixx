@@ -279,9 +279,35 @@ export namespace sof {
 				
 				// TODO: use formatter here instead of the iclass bullshit value i would have to look up
 				{
+					auto FormatCallback = [](
+						IN  xed_uint64_t  VirtualAddress,
+						OUT char*         SymbolBuffer,
+						IN  xed_uint32_t  BufferLength,
+						OUT xed_uint64_t* SymbolOffset,
+						OPT void*         UserContext) -> int32_t {
+							TRACE_FUNCTION_PROTO;
+
+							// TODO: get symbols
+
+							return false;
+					};
+					char XedOutputBuffer[255];
+					xed_print_info_t DisasmPrinter{
+						.p = &IrStatementNative.NativeEncoding.DecodedInstruction,
+						.buf = XedOutputBuffer,
+						.blen = 255,
+						.runtime_address = reinterpret_cast<uintptr_t&>(VirtualInstructionPointer),
+						.disassembly_callback = FormatCallback,
+						.context = nullptr,
+						.syntax = XED_SYNTAX_INTEL,
+						.format_options_valid = false,
+					};
+
+					auto FormatStatus = xed_format_generic(&DisasmPrinter);
 					auto XedInstrctionClass = xed_decoded_inst_get_iform_enum(&IrStatementNative.NativeEncoding.DecodedInstruction);
-					SPDLOG_DEBUG("rip={} : {}",
+					SPDLOG_DEBUG("" ESC_BRIGHTRED"{}" ESC_RESET" : " ESC_BRIGHTMAGENTA"{}" ESC_RESET" | " ESC_BRIGHTBLUE"{}",
 						static_cast<void*>(VirtualInstructionPointer),
+						XedOutputBuffer,
 						xed_iform_enum_t2str(XedInstrctionClass));
 				}
 
@@ -406,53 +432,282 @@ export namespace sof {
 			IN LlirBasicBlock*         CfgNodeForCurrentFrame,
 			IN LlirAmd64NativeEncoded& CfgNodeEntry
 		) {
+			TRACE_FUNCTION_PROTO;
 
-			// MSVC has a common jumptable form/layout based on indices of into a table of rva's into code.
+			// MSVC has a common jump table form/layout based on indices of into a table of rva's into code.
 			// It is build in 2 components, first the bounds checks and default / exit case handler,
-			// second is the jumptable lookup and actual jump command.
+			// second is the jump table lookup and actual jump command.
 			// There may exist mutations, these have to be partially lifted to be interpreted properly,
-			// its important to filter out as many wrong interpretations as possible to guarantee working code
+			// its important to filter out as many wrong interpretations as possible to guarantee working code.
+			// The movsxd is always present in some form however its order and location is not defined,
+			// the cmp will also always be present but is guaranteed to be in the parents node.
+			// Stack and globals may also be used to store parts of dispatch, these need to be followed in order
+			// to exclude false positives and tracing independent registers
 			// 
-			// add    %TO, %LowerBoundOffset%   ; inverse of the smallest case's value
-			// cmp    %T0, %TableCount%         ; number of entries in the table
-			// ja    short %DefaultCase%        ; location of default case / exit
+			// add    %TO, %LowerBoundOffset%     ; inverse of the smallest case's value
+			// ???
+			// movsxd %T1, %T0 (OPT location)     ; the input value of the switch
+			// ???
+			// cmp    %T0, %TableCount%           ; number of entries in the table
+			// ja    short %DefaultCase%          ; location of default case / exit
 			//
-			// movsxd %T2, %T0                  ; the input value of the switch
-			// lea    %T1, __ImageBase          ; get module image base address
-			// mov    %T3, %Table%[%T2 + %T1*4] ; get jump table target rva address
-			// add    %T3, %T2                  ; calculate absolute address for jump
-			// jmp    %T3                       ;
+			// movsxd %T1, %T0 (OPT location)     ; the input value of the switch
+			// lea    %T2, __ImageBase            ; get module image base address
+			// ???
+			// mov    %T3, %Table%[%T2 + %T1 * 4] ; get jump table target rva address
+			// add    %T3, %T2                    ; calculate absolute address for jump
+			// jmp    %T3                         ;
 
 			// Get jmp target register as symbol for %T3
 			// auto jmpInstructionInst = xed_decoded_inst_inst(&CfgNodeEntry.DecodedInstruction);
 			// auto jmpTargetOperand = xed_inst_operand(jmpInstructionInst, 0);
 			// auto jmpTargetRegName = xed_operand_name(jmpTargetOperand);
+
 			auto T3JumpTargetRegister = xed_decoded_inst_get_reg(
 				&CfgNodeEntry.DecodedInstruction,
 				XED_OPERAND_REG0);
+			SPDLOG_DEBUG("Jumptable dispatch register: " ESC_BRIGHTBLUE"{}",
+				xed_reg_enum_t2str(T3JumpTargetRegister));
+
+			struct XOperandLocation {
+				enum {
+					TAG_REGISTER,
+					TAG_MEMORYLOC
+				} OperandTag;
+
+				union {
+					xed_reg_enum_t XRegister;
+
+					struct {
+						byte_t* VirtualAddress;
+						uint8_t OperandWidth;
+					} XMemory;
+				};
+			};
+			enum {
+				SEARCH_FIND_ABSOLUTE,
+				SEARCH_LOAD_TABLE_RVA,
+				SEARCH_LOAD_IMAGEBASE,
+				SEARCH_FIND_RVA_BOUNDS,
+				DISPATCH_COMPLETE_PROC
+			} DispatchFrameState = SEARCH_FIND_ABSOLUTE;
+
+			xed_reg_enum_t T2ImagebaseRegister = XED_REG_INVALID; // just like T3 this will also always be a register
+
+			XOperandLocation T0RvaTableSize{};
+			int64_t        BondsCheckVal = 0;
+			byte_t*        RvaTableLocation = nullptr;
+			auto           StartIndexOfIndex = 0;
 
 
-			// Reverse walk up and find T2 "add" and T2
-			auto NumberOfDecodes = CfgNodeForCurrentFrame->EncodeHybridStream.size();
-			for (auto i = NumberOfDecodes - 2; i > -1; --i) {
+			auto OriginalCfgNodeForFrame = CfgNodeForCurrentFrame;
+			do {
+				size_t NumberOfDecodes = 0;
 
-				auto T2LocatorClass = xed_decoded_inst_get_iform_enum(
-					&CfgNodeForCurrentFrame->EncodeHybridStream[i].NativeEncoding.DecodedInstruction);
-				switch (T2LocatorClass) {
-				case XED_IFORM_ADD_GPRv_GPRv_01:
+				if (T1MovsxdRegisterSEx != XED_REG_INVALID) {
 
-					// Handle association shit
-
-					goto T2ImagebaseAccumilationFound;
+					// we are reentering assuming the movsxd check may have failed, so we dispatch the second level loop
+					CfgNodeForCurrentFrame = CfgNodeForCurrentFrame->InputFlowNodeLinks[0];
+					NumberOfDecodes = CfgNodeForCurrentFrame->EncodeHybridStream.size();
+					SPDLOG_DEBUG("Locating bounds checks in parent node " ESC_BRIGHTRED"{}" ESC_RESET" of " ESC_BRIGHTRED"{}",
+						static_cast<void*>(CfgNodeForCurrentFrame),
+						static_cast<void*>(OriginalCfgNodeForFrame));
 				}
+
+				NumberOfDecodes = CfgNodeForCurrentFrame->EncodeHybridStream.size();
+				for (int32_t i = NumberOfDecodes - 2; i > -1; --i) {
+
+					auto CurrentInstrructionStruct = &CfgNodeForCurrentFrame->EncodeHybridStream[i].NativeEncoding.DecodedInstruction;
+					auto CurrentInstructionForm = xed_decoded_inst_get_iform_enum(
+						CurrentInstrructionStruct);
+					switch (DispatchFrameState) {
+					case SEARCH_FIND_ABSOLUTE: {
+
+						switch (CurrentInstructionForm) {
+						case XED_IFORM_ADD_GPRv_GPRv_01:
+						case XED_IFORM_ADD_GPRv_GPRv_03:
+
+							// Check if target register is jump target
+							if (xed_decoded_inst_get_reg(CurrentInstrructionStruct,
+								XED_OPERAND_REG0) != T3JumpTargetRegister)
+								break;
+
+							T2ImagebaseRegister = xed_decoded_inst_get_reg(CurrentInstrructionStruct,
+								XED_OPERAND_REG1);
+							DispatchFrameState = SEARCH_LOAD_TABLE_RVA;
+							SPDLOG_DEBUG("Predicted imagebase register " ESC_BRIGHTBLUE"{}",
+								xed_reg_enum_t2str(T2ImagebaseRegister));
+							break;
+
+						default:
+							break;
+						}
+						break;
+					}
+					case SEARCH_LOAD_TABLE_RVA: {
+
+						switch (CurrentInstructionForm) {
+						case XED_IFORM_MOV_GPRv_MEMv:
+
+							// Check if target register is jump target
+							if (xed_get_largest_enclosing_register(
+									xed_decoded_inst_get_reg(CurrentInstrructionStruct,
+										XED_OPERAND_REG0)) != T3JumpTargetRegister)
+								break;
+							SPDLOG_DEBUG("Verified register " ESC_BRIGHTBLUE"{}" ESC_RESET" for dispatch",
+								xed_reg_enum_t2str(T3JumpTargetRegister));
+							if (xed_decoded_inst_get_base_reg(CurrentInstrructionStruct, 0) != T2ImagebaseRegister)
+								break; // not the right base register
+
+							// If index exists the scale must match 4 in oder to prove its a rva table
+							T0RvaTableSize.OperandTag = XOperandLocation::TAG_REGISTER;
+							T0RvaTableSize.XRegister = xed_decoded_inst_get_index_reg(CurrentInstrructionStruct, 0);
+							if (T0RvaTableSize.XRegister == XED_REG_INVALID)
+								break;
+							if (xed_decoded_inst_get_scale(CurrentInstrructionStruct, 0) != 4)
+								break;
+							SPDLOG_DEBUG("Predicted jump index reg " ESC_BRIGHTBLUE"{}",
+								xed_reg_enum_t2str(T0RvaTableSize.XRegister));
+							StartIndexOfIndex = i; // Save the iterator index, this is needed for the second pass
+
+							// Locate rva tables location (T2 + displacement)
+							if (!xed_operand_values_has_memory_displacement(CurrentInstrructionStruct))
+								break;
+							RvaTableLocation = ImageMapping.GetImageFileMapping() +
+								xed_decoded_inst_get_memory_displacement(CurrentInstrructionStruct, 0);
+							DispatchFrameState = SEARCH_LOAD_IMAGEBASE; // Correct instruction we have the base index register to follow
+							SPDLOG_DEBUG("Predicting jumptabled location at " ESC_BRIGHTRED"{}",
+								static_cast<void*>(RvaTableLocation));
+							break;
+
+						default:
+							break;
+						}
+						break;
+					}
+					case SEARCH_LOAD_IMAGEBASE: {
+
+						if (CurrentInstructionForm != XED_IFORM_LEA_GPRv_AGEN)
+							break;
+
+						// Check target register is T2
+						if (xed_decoded_inst_get_reg(CurrentInstrructionStruct,
+							XED_OPERAND_REG0) != T2ImagebaseRegister)
+							break;
+						// reg will be rip
+						// if (xed_decoded_inst_get_base_reg(CurrentInstrructionStruct, 0) != XED_REG_INVALID)
+						// 	break; // not the required agen, we need [rip + disp32]
+
+						// Calculate image base and check that we end up at the dos header
+						auto Displacment = xed_decoded_inst_get_memory_displacement(CurrentInstrructionStruct, 0);
+						auto Differential = reinterpret_cast<byte_t*>(xed_decoded_inst_get_user_data(CurrentInstrructionStruct)) +
+							xed_decoded_inst_get_length(CurrentInstrructionStruct) -
+							ImageMapping.GetImageFileMapping() + Displacment;
+						if (Differential != 0)
+							break;
+
+						// Enter second level pass, and track index register to bounds check
+						DispatchFrameState = SEARCH_FIND_RVA_BOUNDS;
+						i = StartIndexOfIndex - 1;
+						SPDLOG_DEBUG("Verified register " ESC_BRIGHTBLUE"{}" ESC_RESET" as imagebase container",
+							xed_reg_enum_t2str(T2ImagebaseRegister));
+						break;
+					}
+					
+					case SEARCH_FIND_RVA_BOUNDS: {
+
+						switch (CurrentInstructionForm) {
+						case XED_IFORM_CMP_GPRv_IMMb:
+						case XED_IFORM_CMP_GPRv_IMMz:
+						case XED_IFORM_CMP_OrAX_IMMz:
+
+							// Check that we are in the parent node and the target registers match
+							if (OriginalCfgNodeForFrame == CfgNodeForCurrentFrame)
+								break;
+							if (T0RvaTableSize.OperandTag != XOperandLocation::TAG_REGISTER)
+								break;
+							if (xed_get_largest_enclosing_register(
+									xed_decoded_inst_get_reg(CurrentInstrructionStruct,
+										XED_OPERAND_REG0)) != T0RvaTableSize.XRegister)
+											break;
+							SPDLOG_DEBUG("Confirmed register " ESC_BRIGHTBLUE"{}" ESC_RESET" for index",
+								xed_reg_enum_t2str(T0RvaTableSize.XRegister));
+							if (!xed_decoded_inst_get_immediate_is_signed(CurrentInstrructionStruct))
+								break;
+
+							BondsCheckVal = xed_decoded_inst_get_signed_immediate(CurrentInstrructionStruct);
+							DispatchFrameState = DISPATCH_COMPLETE_PROC;
+							SPDLOG_DEBUG("Calculated rva table at " ESC_BRIGHTRED"{}" ESC_RESET " with "ESC_BRIGHTGREEN"{}" ESC_RESET" entries",
+								static_cast<void*>(RvaTableLocation),
+								BondsCheckVal);
+							break;
+
+						case XED_IFORM_CMP_AL_IMMb:        // All thse are up to the future me to implment, rip me
+						case XED_IFORM_CMP_GPR8_GPR8_38:
+						case XED_IFORM_CMP_GPR8_GPR8_3A:
+						case XED_IFORM_CMP_GPR8_IMMb_80r7:
+						case XED_IFORM_CMP_GPR8_IMMb_82r7:
+						case XED_IFORM_CMP_GPR8_MEMb:
+						case XED_IFORM_CMP_GPRv_GPRv_39:
+						case XED_IFORM_CMP_GPRv_GPRv_3B:
+						case XED_IFORM_CMP_GPRv_MEMv:
+						case XED_IFORM_CMP_MEMb_GPR8:
+						case XED_IFORM_CMP_MEMb_IMMb_80r7:
+						case XED_IFORM_CMP_MEMb_IMMb_82r7:
+						case XED_IFORM_CMP_MEMv_GPRv:
+						case XED_IFORM_CMP_MEMv_IMMb:
+						case XED_IFORM_CMP_MEMv_IMMz:
+							break;
+
+
+						// Track 
+						case XED_IFORM_MOVSXD_GPRv_GPRz:
+						case XED_IFORM_CDQE:
+
+							if (xed_decoded_inst_get_reg(CurrentInstrructionStruct,
+								XED_OPERAND_REG0) != T1MovsxdRegisterSEx)
+								break;
+							T0CmpBoundsCheckVal = xed_decoded_inst_get_reg(CurrentInstrructionStruct,
+								XED_OPERAND_REG1);
+
+							// we have everything we need from the dispatch node, we can assume the second level
+							// translation catches us automatically, so we just cause the reverse iterator to exit
+							DispatchFrameState = SEARCH_FIND_RVA_BOUNDS;
+							i = -1;
+							SPDLOG_DEBUG("Predicting register " ESC_BRIGHTBLUE"{}" ESC_RESET" as pure index",
+								xed_reg_enum_t2str(T0CmpBoundsCheckVal));
+							break;
+
+						case XED_IFORM_MOVSXD_GPRv_MEMz:
+							break; // not implemented
+
+						default:
+							break;
+						}
+						break;
+					}
+
+					default:
+						break;
+					}
+				}
+			} while (DispatchFrameState == SEARCH_FIND_MOVSXD); // If no movsxd was found in the dispatching node and search will be skipped
+			                                                    // and the search for the boundcheck will continue
+
+			if (DispatchFrameState != DISPATCH_COMPLETE_PROC) {
+
+				SPDLOG_WARN("Could not resolve jumptable, continuing to resolve tree partially");
+				return false;
 			}
 
-			SPDLOG_WARN("Could not resolve jumptable, continuing to resolve tree partially");
-			return false;
+			// We have all the variables we need, we can enque all the new jump locations into the cfgr processor stack
+			for (auto i = 0; i < BondsCheckVal; ++i)
+				CfgTraversalStack.NextCodeScanAddressDeque.emplace_back(
+					ImageMapping.GetImageFileMapping() + *RvaTableLocation,
+					OriginalCfgNodeForFrame,
+					&CfgNodeForCurrentFrame->BranchingOutRightNode.emplace_back());
 
-		T2ImagebaseAccumilationFound:
-
-			return false;
+			return true;
 		}
 
 

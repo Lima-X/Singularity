@@ -6,11 +6,11 @@ rem may eventually update this to get the latest compiler itself using vswhere..
 rem Setup build environment and switch to build directory
 setlocal
 set OriginalWorkingDirectory=%cd%
-if not exist "%~dp0\Output" mkdir Output
+if not exist "%~dp0\out" mkdir out
 
 rem Compile and link TargetExample
-cd %~dp0\Output
-cl /c /O2 /Oi- /EHsc /fp:precise /GF /GS- /Gu /Gy /I .. /std:c++20 /Zi ^
+cd %~dp0\out
+cl /c /O2 /Oi- /EHsc /fp:precise /GF /GS- /Gu /Gy /I ..\include /std:c++20 /Zi ^
 /nologo /Tp ..\TargetExample.cc /utf-8 /Wall
 ml64 /c /Cp /nologo /W3 /Zd /Zf /Zi ..\TargetExampleStub.asm
 link TargetExample.obj TargetExampleStub.obj ..\lvmlib64.lib ^

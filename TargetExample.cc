@@ -1,23 +1,24 @@
 // This file serves as a standalone test file for the obfuscation framework to work on.
 // It is non optimized and self isolated, does not feature a runtime and is heavily restricted,
 // in order to minimize the size of included code to the bare minimum to optimize testing. 
-#include <lvmsdk.h>
+#include <sof/sdk.h>
+#include <intrin.h>
 
 #define IN
 #define OUT
 #define INOUT
 #define OPT
 
-extern int SwitchSelect;
-void Call0();
-void Call1();
-void Call2();
-void Call3();
-void Call4();
-void Call5();
-void Call9();
+volatile int SwitchSelect;
+__declspec(noinline) void Call0() { __nop(); }
+__declspec(noinline) void Call1() { __nop(); }
+__declspec(noinline) void Call2() { __nop(); }
+__declspec(noinline) void Call3() { __nop(); }
+__declspec(noinline) void Call4() { __nop(); }
+__declspec(noinline) void Call5() { __nop(); }
+__declspec(noinline) void Call9() { __nop(); }
 
-#pragma optimize("", off)
+// #pragma optimize("", off)
 void MsvcX64JumptableTest() {
 	
 	SingularityVirtualCodeBegin();
@@ -34,6 +35,7 @@ void MsvcX64JumptableTest() {
 	SingularityVirtualCodeEnd();
 }
 
+#pragma optimize("", off)
 int TestFunction(
 	IN int Argument
 ) {

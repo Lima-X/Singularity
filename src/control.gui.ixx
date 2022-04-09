@@ -318,14 +318,14 @@ export namespace sof {
 							case COLOR_BRIGHTWHITE:
 							{
 								static const ImVec4 BrightColorsToVec[]{
-									{ 0, 0, 0, 1 }, // COLOR_BRIGHTBLACK
-									{ 1, 0, 0, 1 }, // COLOR_BRIGHTRED
-									{ 0, 1, 0, 1 }, // COLOR_BRIGHTGREEN
-									{ 1, 1, 0, 1 }, // COLOR_BRIGHTYELLOW
-									{ 0, 0, 1, 1 }, // COLOR_BRIGHTBLUE
-									{ 1, 0, 1, 1 }, // COLOR_BRIGHTMAGENTA
-									{ 0, 1, 1, 1 }, // COLOR_BRIGHTCYAN
-									{ 1, 1, 1, 1 }  // COLOR_BRIGHTWHITE
+									{ 0, 0,    0, 1 }, // COLOR_BRIGHTBLACK
+									{ 1, 0,    0, 1 }, // COLOR_BRIGHTRED
+									{ 0, 1,    0, 1 }, // COLOR_BRIGHTGREEN
+									{ 1, 1,    0, 1 }, // COLOR_BRIGHTYELLOW
+									{ 0, 0.3f, 1, 1 }, // COLOR_BRIGHTBLUE
+									{ 1, 0,    1, 1 }, // COLOR_BRIGHTMAGENTA
+									{ 0, 1,    1, 1 }, // COLOR_BRIGHTCYAN
+									{ 1, 1,    1, 1 }  // COLOR_BRIGHTWHITE
 								};
 								ImGui::PushStyleColor(ImGuiCol_Text,
 									BrightColorsToVec[LogMetaDataEntry.FormattedStringRanges[i].FormatTag - COLOR_BRIGHTBLACK]);
