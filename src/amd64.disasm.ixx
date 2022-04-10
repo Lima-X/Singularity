@@ -446,15 +446,15 @@ export namespace sof {
 			// 
 			// add    %TO, %LowerBoundOffset%     ; inverse of the smallest case's value
 			// ???
-			// movsxd %T1, %T0 (OPT location)     ; the input value of the switch
+			// movsxd %T0, %T0 (OPT location)     ; the input value of the switch
 			// ???
 			// cmp    %T0, %TableCount%           ; number of entries in the table
 			// ja    short %DefaultCase%          ; location of default case / exit
 			//
-			// movsxd %T1, %T0 (OPT location)     ; the input value of the switch
+			// movsxd %T0, %T0 (OPT location)     ; the input value of the switch
 			// lea    %T2, __ImageBase            ; get module image base address
 			// ???
-			// mov    %T3, %Table%[%T2 + %T1 * 4] ; get jump table target rva address
+			// mov    %T3, %Table%[%T2 + %T0 * 4] ; get jump table target rva address
 			// add    %T3, %T2                    ; calculate absolute address for jump
 			// jmp    %T3                         ;
 
@@ -471,6 +471,7 @@ export namespace sof {
 
 			struct XOperandLocation {
 				enum {
+					TAG_INVALID_STATE = 0,
 					TAG_REGISTER,
 					TAG_MEMORYLOC
 				} OperandTag;
@@ -489,22 +490,23 @@ export namespace sof {
 				SEARCH_LOAD_TABLE_RVA,
 				SEARCH_LOAD_IMAGEBASE,
 				SEARCH_FIND_RVA_BOUNDS,
-				DISPATCH_COMPLETE_PROC
+				DISPATCH_COMPLETE_PROC,
+				DISPATCH_COMPLETE_ERROR,
 			} DispatchFrameState = SEARCH_FIND_ABSOLUTE;
 
 			xed_reg_enum_t T2ImagebaseRegister = XED_REG_INVALID; // just like T3 this will also always be a register
 
 			XOperandLocation T0RvaTableSize{};
 			int64_t        BondsCheckVal = 0;
-			byte_t*        RvaTableLocation = nullptr;
+			rva_t*         RvaTableLocation = nullptr;
 			auto           StartIndexOfIndex = 0;
-
 
 			auto OriginalCfgNodeForFrame = CfgNodeForCurrentFrame;
 			do {
 				size_t NumberOfDecodes = 0;
 
-				if (T1MovsxdRegisterSEx != XED_REG_INVALID) {
+				if (DispatchFrameState == SEARCH_FIND_RVA_BOUNDS &&
+					OriginalCfgNodeForFrame == CfgNodeForCurrentFrame) {
 
 					// we are reentering assuming the movsxd check may have failed, so we dispatch the second level loop
 					CfgNodeForCurrentFrame = CfgNodeForCurrentFrame->InputFlowNodeLinks[0];
@@ -573,8 +575,8 @@ export namespace sof {
 							// Locate rva tables location (T2 + displacement)
 							if (!xed_operand_values_has_memory_displacement(CurrentInstrructionStruct))
 								break;
-							RvaTableLocation = ImageMapping.GetImageFileMapping() +
-								xed_decoded_inst_get_memory_displacement(CurrentInstrructionStruct, 0);
+							RvaTableLocation = reinterpret_cast<rva_t*>(ImageMapping.GetImageFileMapping() +
+								xed_decoded_inst_get_memory_displacement(CurrentInstrructionStruct, 0));
 							DispatchFrameState = SEARCH_LOAD_IMAGEBASE; // Correct instruction we have the base index register to follow
 							SPDLOG_DEBUG("Predicting jumptabled location at " ESC_BRIGHTRED"{}",
 								static_cast<void*>(RvaTableLocation));
@@ -618,6 +620,7 @@ export namespace sof {
 
 						switch (CurrentInstructionForm) {
 						case XED_IFORM_CMP_GPRv_IMMb:
+						case XED_IFORM_CMP_AL_IMMb:
 						case XED_IFORM_CMP_GPRv_IMMz:
 						case XED_IFORM_CMP_OrAX_IMMz:
 
@@ -635,14 +638,26 @@ export namespace sof {
 							if (!xed_decoded_inst_get_immediate_is_signed(CurrentInstrructionStruct))
 								break;
 
-							BondsCheckVal = xed_decoded_inst_get_signed_immediate(CurrentInstrructionStruct);
+							BondsCheckVal = xed_decoded_inst_get_signed_immediate(CurrentInstrructionStruct) + 1;
 							DispatchFrameState = DISPATCH_COMPLETE_PROC;
 							SPDLOG_DEBUG("Calculated rva table at " ESC_BRIGHTRED"{}" ESC_RESET " with "ESC_BRIGHTGREEN"{}" ESC_RESET" entries",
 								static_cast<void*>(RvaTableLocation),
 								BondsCheckVal);
 							break;
 
-						case XED_IFORM_CMP_AL_IMMb:        // All thse are up to the future me to implment, rip me
+						case XED_IFORM_CMP_MEMb_IMMb_80r7:
+						case XED_IFORM_CMP_MEMb_IMMb_82r7:
+
+							// Similar checks as above
+							if (OriginalCfgNodeForFrame == CfgNodeForCurrentFrame)
+								break;
+							if (T0RvaTableSize.OperandTag != XOperandLocation::TAG_MEMORYLOC)
+								break;
+
+
+
+
+						// All these are up to the future me to implement, rip me
 						case XED_IFORM_CMP_GPR8_GPR8_38:
 						case XED_IFORM_CMP_GPR8_GPR8_3A:
 						case XED_IFORM_CMP_GPR8_IMMb_80r7:
@@ -652,47 +667,107 @@ export namespace sof {
 						case XED_IFORM_CMP_GPRv_GPRv_3B:
 						case XED_IFORM_CMP_GPRv_MEMv:
 						case XED_IFORM_CMP_MEMb_GPR8:
-						case XED_IFORM_CMP_MEMb_IMMb_80r7:
-						case XED_IFORM_CMP_MEMb_IMMb_82r7:
 						case XED_IFORM_CMP_MEMv_GPRv:
 						case XED_IFORM_CMP_MEMv_IMMb:
 						case XED_IFORM_CMP_MEMv_IMMz:
 							break;
 
-
-						// Track 
 						case XED_IFORM_MOVSXD_GPRv_GPRz:
 						case XED_IFORM_CDQE:
 
-							if (xed_decoded_inst_get_reg(CurrentInstrructionStruct,
-								XED_OPERAND_REG0) != T1MovsxdRegisterSEx)
+							// Check that the current storage is within
+							if (T0RvaTableSize.OperandTag != XOperandLocation::TAG_REGISTER)
 								break;
-							T0CmpBoundsCheckVal = xed_decoded_inst_get_reg(CurrentInstrructionStruct,
+							if (xed_decoded_inst_get_reg(CurrentInstrructionStruct,
+								XED_OPERAND_REG0) != T0RvaTableSize.XRegister)
+								break;
+							T0RvaTableSize.XRegister = xed_decoded_inst_get_reg(CurrentInstrructionStruct,
 								XED_OPERAND_REG1);
 
-							// we have everything we need from the dispatch node, we can assume the second level
-							// translation catches us automatically, so we just cause the reverse iterator to exit
-							DispatchFrameState = SEARCH_FIND_RVA_BOUNDS;
-							i = -1;
 							SPDLOG_DEBUG("Predicting register " ESC_BRIGHTBLUE"{}" ESC_RESET" as pure index",
-								xed_reg_enum_t2str(T0CmpBoundsCheckVal));
+								xed_reg_enum_t2str(T0RvaTableSize.XRegister));
 							break;
 
 						case XED_IFORM_MOVSXD_GPRv_MEMz:
-							break; // not implemented
+						{
 
+							// Check that the current storage is within
+							if (T0RvaTableSize.OperandTag != XOperandLocation::TAG_REGISTER)
+								break;
+							if (xed_decoded_inst_get_reg(CurrentInstrructionStruct,
+								XED_OPERAND_REG0) != T0RvaTableSize.XRegister)
+								break;
+
+							// calculate memory address using intelxed agen
+							struct AgenCallbackContext {
+								uint64_t RIP;
+								uint64_t RSP;
+							};
+							auto XedAgenCallback = [](
+								IN  xed_reg_enum_t reg,
+								OPT void* context,
+								OUT xed_bool_t* error) -> xed_uint64_t {
+									TRACE_FUNCTION_PROTO;
+
+									auto AgenContext = static_cast<AgenCallbackContext*>(context);
+									switch (reg) {
+									case XED_REG_CS:
+									case XED_REG_DS:
+									case XED_REG_ES:
+									case XED_REG_SS:
+										return NULL;
+
+									case XED_REG_RIP:
+										return AgenContext->RIP;
+									case XED_REG_RSP:
+										return AgenContext->RSP;
+
+									default:
+										*error = true;
+										return NULL;
+									}
+							};
+							xed_agen_register_callback(XedAgenCallback, XedAgenCallback);
+							AgenCallbackContext AgenContext{ xed_decoded_inst_get_user_data(CurrentInstrructionStruct) +
+								xed_decoded_inst_get_length(CurrentInstrructionStruct),
+								NULL };
+							uint64_t AgenResult = NULL;
+							auto AgenStatus = xed_agen(CurrentInstrructionStruct,
+								0,
+								static_cast<void*>(&AgenContext),
+								&AgenResult);
+
+							if (AgenStatus != XED_ERROR_NONE) {
+
+								// Error occured in agen, log and exit cause our register was associated with this location
+								DispatchFrameState = DISPATCH_COMPLETE_ERROR;
+								i = -1;
+								SPDLOG_ERROR("Xed Agen failed with [" ESC_BRIGHTRED"{}" ESC_RESET"] at rip=" ESC_BRIGHTRED"{}",
+									xed_error_enum_t2str(AgenStatus),
+									reinterpret_cast<void*>(xed_decoded_inst_get_user_data(CurrentInstrructionStruct)));
+								break;
+							}
+
+							// re associate memory location to index reg
+							auto OrignalIndexRegister = T0RvaTableSize.XRegister;
+							T0RvaTableSize.OperandTag = XOperandLocation::TAG_MEMORYLOC;
+							T0RvaTableSize.XMemory.OperandWidth = 32;
+							T0RvaTableSize.XMemory.VirtualAddress = reinterpret_cast<byte_t*>(AgenResult);
+							SPDLOG_DEBUG("Reassociated index-reg " ESC_BRIGHTBLUE"{}" ESC_RESET" to stacklocation " ESC_BRIGHTRED"{}",
+								xed_reg_enum_t2str(OrignalIndexRegister),
+								fmt::ptr(T0RvaTableSize.XMemory.VirtualAddress));
+							break;
+						}
 						default:
 							break;
 						}
 						break;
 					}
-
 					default:
 						break;
 					}
 				}
-			} while (DispatchFrameState == SEARCH_FIND_MOVSXD); // If no movsxd was found in the dispatching node and search will be skipped
-			                                                    // and the search for the boundcheck will continue
+			} while (DispatchFrameState == SEARCH_FIND_RVA_BOUNDS);
 
 			if (DispatchFrameState != DISPATCH_COMPLETE_PROC) {
 
@@ -701,11 +776,13 @@ export namespace sof {
 			}
 
 			// We have all the variables we need, we can enque all the new jump locations into the cfgr processor stack
+			OriginalCfgNodeForFrame->BranchingOutRightNode.reserve(
+				OriginalCfgNodeForFrame->BranchingOutRightNode.size() + BondsCheckVal);
 			for (auto i = 0; i < BondsCheckVal; ++i)
 				CfgTraversalStack.NextCodeScanAddressDeque.emplace_back(
-					ImageMapping.GetImageFileMapping() + *RvaTableLocation,
+					ImageMapping.GetImageFileMapping() + RvaTableLocation[i],
 					OriginalCfgNodeForFrame,
-					&CfgNodeForCurrentFrame->BranchingOutRightNode.emplace_back());
+					&OriginalCfgNodeForFrame->BranchingOutRightNode.emplace_back());
 
 			return true;
 		}
