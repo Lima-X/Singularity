@@ -155,7 +155,7 @@ export namespace sof {
 	// A polymorphic base type stored as a list in cfg nodes used to identify the and define abstractions
 	struct LlirInstructionStatement {
 		enum CfgStatementType : int8_t {
-			TYPE_NOT_ALLCOATED = 0,
+			TYPE_NOT_ALLOCATED = 0,
 			TYPE_PURE_NATIVE,
 			TYPE_AMD64_LIFTED,
 		};
@@ -254,7 +254,7 @@ export namespace sof {
 		LlirInstructionStatement& AllocateLlir3acObject() {
 			TRACE_FUNCTION_PROTO;
 			auto& Object = EncodeHybridStream.emplace_back();
-			Object.TypeOfStatement = LlirInstructionStatement::TYPE_NOT_ALLCOATED;
+			Object.TypeOfStatement = LlirInstructionStatement::TYPE_NOT_ALLOCATED;
 			return Object;
 		}
 
